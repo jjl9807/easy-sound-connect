@@ -2,5 +2,9 @@
 name = "libmdr2"
 version = "0.1.0"
 edition = "2024"
+description = "Transport-independent SONY MDR v2 codecs, capability-driven controls, and reliable sessions"
+license = "MIT"
+repository = "https://github.com/jjl9807/easy-sound-connect"
+readme = "README.md"
 
 [dependencies]

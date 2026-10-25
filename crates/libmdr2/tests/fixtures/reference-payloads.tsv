@@ -1,0 +1,12 @@
+# Protocol payload vectors; provenance is in README.md and ../../docs/testing.md.
+# id	source	table	request_hex	response_hex	expected
+wh-xm6-protocol	xm6-sim	1	0000	0100030030320000	version:03003032
+wh-xm6-model	xm6-sim	1	0401	05010a57482d31303030584d36	text:WH-1000XM6
+wh-xm6-firmware	xm6-sim	1	0402	050205332e312e35	text:3.1.5
+wh-xm6-appearance	xm6-sim	1	0403	05033003	appearance:30,03
+wh-xm6-battery	xm6-initial-body	1	2200	23005100	battery:81,0
+wh-xm6-functions-t1	xm6-sim	1	0600	07002d10ff12ff13ff14ff15ff16ff17ff23ff253827ff20ff571356ff6d0b710290ffa114c1ffc2ffe21df13afc0d692cf943d13dd32b94ff4131423c44ffff2fd22219ffeb10e511e60ee71cfd2db619b044b245b821b7173441f425	functions:45
+wh-xm6-functions-t2	xm6-sim	2	0600	070010423f52ff54ff60ff61fff2fff527f93363ff21ff23ff34fffdfff832330531ff	functions:16
+wh-xm5-protocol	xm5-command	1	0000	0100030020160000	version:03002016
+wh-xm5-firmware	xm5-command	1	0402	050205322e342e31	text:2.4.1
+wh-xm5-battery	xm5-command	1	2200	23002100	battery:33,0

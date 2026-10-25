@@ -1,14 +1,25 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+#![doc = include_str!("../README.md")]
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod alert;
+pub mod assignment;
+pub mod audio;
+pub mod battery;
+pub mod command;
+pub mod common;
+pub mod connection;
+pub mod device;
+pub mod equalizer;
+pub mod frame;
+pub mod general;
+pub mod noise;
+pub mod peripheral;
+pub mod playback;
+pub mod power;
+pub mod session;
+pub mod sound_effect;
+pub mod system;
+pub mod system2;
+pub mod types;
+pub mod voice_guidance;
