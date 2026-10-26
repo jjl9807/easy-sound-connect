@@ -5,8 +5,8 @@ use ezsc_core::{
     ConnectionState, DeviceHandle, EqualizerState, Freshness, NoiseChange, NoiseState,
     equalizer::{BandInformation, EqualizerKind, Preset, PresetId},
     noise::{
-        AmbientLevelRange, AmbientMode, NoiseAvailability, NoiseKind, NoiseMode, NoiseParameters,
-        NoiseSettings, NoiseSwitch,
+        AdaptiveSensitivity, AmbientLevelRange, AmbientMode, NoiseAvailability, NoiseKind,
+        NoiseMode, NoiseParameters, NoiseSettings, NoiseSwitch,
     },
 };
 use gpui::{Context, Div, div, prelude::*, rgb};
@@ -305,6 +305,81 @@ impl Desktop {
                     );
                 }
             }
+            if let Some((adaptive, sensitivity)) = noise_adaptation(entry) {
+                let adaptation_on = adaptive == NoiseSwitch::On;
+                card = card.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_3()
+                        .child(format!(
+                            "Noise adaptation: {}",
+                            if adaptation_on { "On" } else { "Off" }
+                        ))
+                        .child(
+                            action_button(
+                                ("noise-adaptation", index),
+                                if adaptation_on { "Turn off" } else { "Turn on" },
+                                enabled,
+                                false,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    if enabled {
+                                        view.submit_control(
+                                            ControlAction::Noise(
+                                                kind,
+                                                NoiseChange::Adaptive(!adaptation_on),
+                                            ),
+                                            format!(
+                                                "Noise adaptation {}",
+                                                if adaptation_on { "off" } else { "on" }
+                                            ),
+                                        );
+                                        cx.notify();
+                                    }
+                                },
+                            )),
+                        ),
+                );
+                let mut choices = div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_3()
+                    .child("Adaptation sensitivity");
+                for (choice_index, (choice, label)) in [
+                    (AdaptiveSensitivity::Low, "Low"),
+                    (AdaptiveSensitivity::Standard, "Standard"),
+                    (AdaptiveSensitivity::High, "High"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    choices = choices.child(
+                        action_button(
+                            ("noise-sensitivity", index * 3 + choice_index),
+                            label,
+                            enabled,
+                            sensitivity == choice,
+                        )
+                        .on_click(cx.listener(move |view, _, _, cx| {
+                            if enabled {
+                                view.submit_control(
+                                    ControlAction::Noise(
+                                        kind,
+                                        NoiseChange::AdaptiveSensitivity(choice),
+                                    ),
+                                    format!("Adaptation sensitivity {label}"),
+                                );
+                                cx.notify();
+                            }
+                        })),
+                    );
+                }
+                card = card.child(choices);
+            }
             cards = cards.child(card);
         }
         for (index, entry) in snapshot.equalizers.iter().enumerate() {
@@ -449,6 +524,25 @@ fn noise_ready(entry: &NoiseState) -> bool {
         && entry
             .status
             .is_some_and(|status| status.availability == NoiseAvailability::Enabled)
+}
+fn noise_adaptation(entry: &NoiseState) -> Option<(NoiseSwitch, AdaptiveSensitivity)> {
+    if entry.kind != NoiseKind::AdaptiveNcAndAmbientLevel
+        || entry.capability.as_ref()?.kind() != entry.kind
+    {
+        return None;
+    }
+    match entry.parameters? {
+        NoiseParameters::Control {
+            settings:
+                NoiseSettings::AdaptiveNcAndAmbientLevel {
+                    adaptive,
+                    sensitivity,
+                    ..
+                },
+            ..
+        } => Some((adaptive, sensitivity)),
+        _ => None,
+    }
 }
 fn equalizer_ready(entry: &EqualizerState) -> bool {
     entry.freshness == Freshness::Current
@@ -655,6 +749,98 @@ impl NoisePresentation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ezsc_core::noise::{ChangeStatus, NoiseCapability, NoiseStatus};
+
+    fn adaptive_state() -> NoiseState {
+        let kind = NoiseKind::AdaptiveNcAndAmbientLevel;
+        let table = kind.function_id().table;
+        NoiseState {
+            kind,
+            capability: Some(
+                NoiseCapability::decode_response(table, &[0x61, 0x19, 1, 0, 1, 9, 2]).unwrap(),
+            ),
+            status: Some(NoiseStatus::decode_response(table, &[0x63, 0x19, 0]).unwrap()),
+            parameters: Some(NoiseParameters::Control {
+                change: ChangeStatus::Changed,
+                effect: NoiseSwitch::Off,
+                settings: NoiseSettings::AdaptiveNcAndAmbientLevel {
+                    mode: NoiseMode::NoiseCancelling,
+                    ambient_mode: AmbientMode::Normal,
+                    level: 7,
+                    adaptive: NoiseSwitch::Off,
+                    sensitivity: AdaptiveSensitivity::Low,
+                },
+            }),
+            freshness: Freshness::Current,
+        }
+    }
+
+    #[test]
+    fn adaptation_controls_require_matching_capability_and_parameters() {
+        let state = adaptive_state();
+        // Stored sensitivity is available even with adaptation and effects off;
+        // no model identity or selected sound mode is needed to expose it.
+        assert!(noise_ready(&state));
+        assert_eq!(
+            noise_adaptation(&state),
+            Some((NoiseSwitch::Off, AdaptiveSensitivity::Low))
+        );
+
+        let mut missing = state.clone();
+        missing.capability = None;
+        assert_eq!(noise_adaptation(&missing), None);
+        let mut wrong_kind = state.clone();
+        wrong_kind.kind = NoiseKind::DualNcAndAmbientLevel;
+        assert_eq!(noise_adaptation(&wrong_kind), None);
+        let mut wrong_capability = state.clone();
+        wrong_capability.capability = Some(NoiseCapability::nc_only());
+        assert_eq!(noise_adaptation(&wrong_capability), None);
+
+        for settings in [
+            NoiseSettings::NcOnly {
+                nc: NoiseSwitch::On,
+            },
+            NoiseSettings::AmbientLevel {
+                ambient_mode: AmbientMode::Normal,
+                level: 7,
+            },
+            NoiseSettings::DualNcAndAmbientLevel {
+                mode: NoiseMode::AmbientSound,
+                ambient_mode: AmbientMode::Normal,
+                level: 7,
+            },
+        ] {
+            let mut non_adaptive = state.clone();
+            non_adaptive.parameters = Some(NoiseParameters::Control {
+                change: ChangeStatus::Changed,
+                effect: NoiseSwitch::On,
+                settings,
+            });
+            assert_eq!(noise_adaptation(&non_adaptive), None);
+        }
+    }
+
+    #[test]
+    fn adaptation_values_remain_visible_when_editing_is_unavailable() {
+        let state = adaptive_state();
+        let expected = noise_adaptation(&state);
+        for freshness in [Freshness::Unknown, Freshness::Stale] {
+            let mut outdated = state.clone();
+            outdated.freshness = freshness;
+            assert!(!noise_ready(&outdated));
+            assert_eq!(noise_adaptation(&outdated), expected);
+        }
+        let mut unavailable = state.clone();
+        unavailable.status = Some(
+            NoiseStatus::decode_response(state.kind.function_id().table, &[0x63, 0x19, 1]).unwrap(),
+        );
+        assert!(!noise_ready(&unavailable));
+        assert_eq!(noise_adaptation(&unavailable), expected);
+        unavailable.status = None;
+        assert!(!noise_ready(&unavailable));
+        unavailable.parameters = None;
+        assert_eq!(noise_adaptation(&unavailable), None);
+    }
 
     #[test]
     fn ambient_steps_respect_partial_terminal_steps_and_invalid_current_values() {
