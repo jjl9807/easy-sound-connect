@@ -2,5 +2,16 @@
 name = "core"
 version = "0.1.0"
 edition = "2024"
+publish = false
+
+[lib]
+name = "ezsc_core"
 
 [dependencies]
+bluetooth.workspace = true
+libmdr2.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tokio-util.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
