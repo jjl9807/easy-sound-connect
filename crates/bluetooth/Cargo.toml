@@ -2,5 +2,26 @@
 name = "bluetooth"
 version = "0.1.0"
 edition = "2024"
+publish = false
+description = "Native ordered Bluetooth control transports for easy-sound-connect"
+readme = "README.md"
 
 [dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net"] }
+tokio-util.workspace = true
+futures-util.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-io-bluetooth.workspace = true
+objc2-core-foundation.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

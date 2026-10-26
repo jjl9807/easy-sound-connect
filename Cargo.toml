@@ -7,3 +7,25 @@ members = [
     "crates/app",
 ]
 resolver = "3"
+
+[workspace.dependencies]
+futures-util = "0.3"
+tokio = "1.53"
+tokio-util = { version = "0.7", features = ["rt"] }
+
+bluer = { version = "0.17.4", features = ["bluetoothd", "rfcomm"] }
+windows = { version = "0.62.2", features = [
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_Rfcomm",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_Enumeration",
+    "Foundation",
+    "Foundation_Collections",
+    "Networking_Sockets",
+    "Storage_Streams",
+    "Win32_System_WinRT",
+] }
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+objc2-io-bluetooth = "0.3.2"
+objc2-core-foundation = "0.3.2"
