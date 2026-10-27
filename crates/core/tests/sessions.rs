@@ -1481,7 +1481,8 @@ async fn message_counters_separate_responses_and_notifications_before_after_and_
             responses: 7,
             notifications: 3,
             noise_parameters_notifications: 2,
-            equalizer_parameters_notifications: 0
+            equalizer_parameters_notifications: 0,
+            ..Default::default()
         }
     );
     handle
@@ -1494,7 +1495,8 @@ async fn message_counters_separate_responses_and_notifications_before_after_and_
             responses: 10,
             notifications: 4,
             noise_parameters_notifications: 2,
-            equalizer_parameters_notifications: 1
+            equalizer_parameters_notifications: 1,
+            ..Default::default()
         }
     );
 
@@ -1544,7 +1546,8 @@ async fn message_counters_separate_responses_and_notifications_before_after_and_
             responses: 10,
             notifications: 5,
             noise_parameters_notifications: 2,
-            equalizer_parameters_notifications: 2
+            equalizer_parameters_notifications: 2,
+            ..Default::default()
         }
     );
     drop(incoming);

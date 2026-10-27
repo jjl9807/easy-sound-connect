@@ -1,15 +1,19 @@
 //! Desktop controls driven by current device capabilities and confirmed state.
 
 mod gui_controls;
+mod gui_daily_controls;
+mod gui_device_prompts;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bluetooth::{CancellationToken, Device, DeviceId, TransportKind};
-use ezsc_core::{DeviceHandle, DeviceManager, DeviceSnapshot, OperationResult, SessionConfig};
+use ezsc_core::{
+    DeviceHandle, DeviceManager, DeviceSnapshot, OperationResult, PromptId, SessionConfig,
+};
 use gpui::{
-    App, Bounds, Context, IntoElement, Render, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, rgb, size,
+    App, Bounds, Context, FocusHandle, IntoElement, Render, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, rgb, size,
 };
 use tokio::{runtime::Handle, sync::mpsc};
 
@@ -22,6 +26,7 @@ enum Event {
     Snapshot(u64, Box<DeviceSnapshot>),
     Finished(u64, Result<String, String>),
     Operation(u64, String, Result<OperationResult, String>),
+    PromptResponse(u64, PromptId, Result<OperationResult, String>),
 }
 
 struct Desktop {
@@ -38,6 +43,11 @@ struct Desktop {
     busy: bool,
     message: String,
     diagnostics: bool,
+    replying_to: Option<PromptId>,
+    prompt_seen: Option<PromptId>,
+    prompt_focus: FocusHandle,
+    prompt_action_focus: [FocusHandle; 2],
+    prompt_error: Option<(PromptId, String)>,
 }
 
 impl Desktop {
@@ -93,6 +103,11 @@ impl Desktop {
             busy: false,
             message: "Starting Bluetooth…".into(),
             diagnostics: std::env::args().any(|arg| arg == "--diagnostics"),
+            replying_to: None,
+            prompt_seen: None,
+            prompt_focus: cx.focus_handle(),
+            prompt_action_focus: [cx.focus_handle(), cx.focus_handle()],
+            prompt_error: None,
         }
     }
 
@@ -145,18 +160,37 @@ impl Desktop {
                     self.snapshot = Some(handle.snapshot());
                 }
                 self.busy = false;
-                self.message = match result {
-                    Ok(OperationResult::Confirmed) => {
-                        format!("Confirmed: {label}. The headset confirmed the requested value.")
+                self.message = operation_message(&label, result);
+            }
+            Event::PromptResponse(epoch, id, result)
+                if epoch == self.epoch && self.replying_to == Some(id) =>
+            {
+                self.replying_to = None;
+                if let Some(handle) = &self.handle {
+                    self.snapshot = Some(handle.snapshot());
+                }
+                if !self
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.pending_prompt.as_ref())
+                    .is_some_and(|prompt| prompt.id != id)
+                {
+                    if let Err(error) = &result {
+                        self.prompt_error = Some((id, error.clone()));
                     }
-                    Ok(OperationResult::Adjusted) => format!(
-                        "Adjusted: {label}. The headset reported a different value; the controls show its actual state."
-                    ),
-                    Ok(OperationResult::Synchronized) => format!("Updated: {label}."),
-                    Err(error) => format!("Could not confirm {label}: {error}"),
-                };
+                    self.message = operation_message("Device decision", result);
+                }
             }
             _ => {}
+        }
+        if let Some(prompt) = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.pending_prompt.as_ref())
+            && self.replying_to.is_some_and(|id| id != prompt.id)
+        {
+            self.replying_to = None;
+            self.prompt_error = None;
         }
         if let Some(snapshot) = &self.snapshot
             && matches!(
@@ -164,6 +198,9 @@ impl Desktop {
                 ezsc_core::ConnectionState::Disconnected | ezsc_core::ConnectionState::Failed
             )
         {
+            self.replying_to = None;
+            self.prompt_seen = None;
+            self.prompt_error = None;
             self.message = match &snapshot.last_error {
                 Some(error) => format!(
                     "Control connection ended: {error}. Release control before reconnecting."
@@ -186,7 +223,7 @@ impl Desktop {
     }
 
     fn discover(&mut self) {
-        if self.discovering || self.busy {
+        if self.discovering || self.settings_blocked() {
             return;
         }
         let Some(manager) = self.manager.clone() else {
@@ -202,7 +239,7 @@ impl Desktop {
     }
 
     fn connect(&mut self, device: DeviceId, transport: TransportKind) {
-        if self.busy || self.selected.is_some() {
+        if self.settings_blocked() || self.selected.is_some() {
             return;
         }
         let Some(manager) = self.manager.clone() else {
@@ -213,13 +250,17 @@ impl Desktop {
         self.selected = Some(device.clone());
         self.snapshot = None;
         self.handle = None;
+        self.replying_to = None;
+        self.prompt_seen = None;
+        self.prompt_error = None;
         self.busy = true;
         self.message = "Connecting…".into();
         let sender = self.events.clone();
         let cancel = self.lifetime.clone();
         self.runtime.spawn(async move {
             let result = async {
-                let handle = manager.connect(device, transport, SessionConfig::default()).await.map_err(|error| error.to_string())?;
+                let config = SessionConfig { report_foreground: true, ..SessionConfig::default() };
+                let handle = manager.connect(device, transport, config).await.map_err(|error| error.to_string())?;
                 let mut updates = handle.subscribe();
                 if sender.send(Event::Connected(epoch, handle.clone())).await.is_err() { handle.cancel(); return Ok(()); }
                 let snapshots = sender.clone();
@@ -252,6 +293,9 @@ impl Desktop {
         self.epoch += 1;
         let epoch = self.epoch;
         self.busy = true;
+        self.replying_to = None;
+        self.prompt_seen = None;
+        self.prompt_error = None;
         if let Some(handle) = self.handle.take() {
             handle.cancel();
         }
@@ -269,7 +313,7 @@ impl Desktop {
     }
 
     fn refresh(&mut self) {
-        if self.busy {
+        if self.settings_blocked() {
             return;
         }
         let Some(handle) = self.handle.clone() else {
@@ -294,6 +338,26 @@ impl Desktop {
     }
 }
 
+fn operation_message(label: &str, result: Result<OperationResult, String>) -> String {
+    match result {
+        Ok(OperationResult::Confirmed) => {
+            format!("Confirmed: {label}. The headset confirmed the requested value.")
+        }
+        Ok(OperationResult::Adjusted) => format!(
+            "Adjusted: {label}. The headset reported a different value; the controls show its actual state."
+        ),
+        Ok(OperationResult::Synchronized) => format!("Updated: {label}."),
+        Ok(OperationResult::AwaitingConfirmation) => {
+            "A headset message interrupted this change. Review it, then check the reported settings before trying again.".into()
+        }
+        Ok(OperationResult::Cancelled) => {
+            "Cancelled. Your decision was sent to the headset.".into()
+        }
+        Ok(OperationResult::Dismissed) => "Device message closed locally.".into(),
+        Err(error) => format!("Could not confirm {label}: {error}"),
+    }
+}
+
 fn button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<gpui::SharedString>,
@@ -310,7 +374,7 @@ fn button(
 }
 
 impl Render for Desktop {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut device_list = div().flex().flex_col().flex_shrink_0().gap_3();
         for (index, device) in self.devices.iter().enumerate() {
             let mut row = div()
@@ -326,7 +390,7 @@ impl Render for Desktop {
                         .clone()
                         .unwrap_or_else(|| "Unnamed headset".into()),
                 );
-            if self.selected.is_none() && !self.busy {
+            if self.selected.is_none() && !self.settings_blocked() {
                 let mut controls = div().flex().gap_2();
                 for (transport_index, transport) in device.transports.iter().copied().enumerate() {
                     let id = device.id.clone();
@@ -346,7 +410,7 @@ impl Render for Desktop {
             device_list = device_list.child(row);
         }
         let mut controls = div().flex().gap_2();
-        if self.manager.is_some() && !self.discovering && !self.busy {
+        if self.manager.is_some() && !self.discovering && !self.settings_blocked() {
             controls = controls.child(button("discover", "Refresh devices").on_click(cx.listener(
                 |view, _, _, cx| {
                     view.discover();
@@ -363,7 +427,7 @@ impl Render for Desktop {
             )));
         }
         if self.handle.is_some()
-            && !self.busy
+            && !self.settings_blocked()
             && self
                 .snapshot
                 .as_ref()
@@ -382,7 +446,7 @@ impl Render for Desktop {
                 state = state.child(line);
             }
         }
-        div()
+        let content = div()
             .id("desktop")
             .size_full()
             .overflow_y_scroll()
@@ -392,8 +456,6 @@ impl Render for Desktop {
             .gap_4()
             .bg(rgb(0x17171b))
             .text_color(rgb(0xe8eef4))
-            .font_family("sans-serif")
-            .text_size(px(15.))
             .child(div().text_size(px(25.)).child("Easy Sound Connect"))
             .child(if self.selected.is_some() {
                 "Controls show the state reported by your headset."
@@ -412,6 +474,19 @@ impl Render for Desktop {
                     .child(self.message.clone()),
             )
             .child(self.render_sound_controls(cx))
+            .child(self.render_daily_controls(cx));
+        let prompt = self.render_device_prompt(window, cx);
+        if prompt.is_none() {
+            self.prompt_seen = None;
+        }
+        div()
+            .relative()
+            .size_full()
+            .font_family("sans-serif")
+            .text_size(px(15.))
+            .text_color(rgb(0xe8eef4))
+            .child(content)
+            .children(prompt)
     }
 }
 

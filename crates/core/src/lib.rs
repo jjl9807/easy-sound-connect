@@ -9,12 +9,14 @@
 
 mod controls;
 mod manager;
+mod prompts;
 mod runtime;
 mod state;
 
-pub use controls::NoiseChange;
-pub use libmdr2::{equalizer, noise};
+pub use controls::{AudioChange, NoiseChange, SystemChange};
+pub use libmdr2::{alert, audio, equalizer, noise, system};
 pub use manager::DeviceManager;
+pub use prompts::{DevicePrompt, PromptId, PromptReply};
 pub use runtime::{DeviceHandle, OperationResult, SessionConfig};
 pub use state::*;
 
@@ -32,6 +34,9 @@ pub enum Error {
     Disconnected,
     Timeout(TimeoutStage),
     AlreadyConnected,
+    PromptPending,
+    StalePrompt,
+    InvalidPromptReply,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +49,7 @@ pub enum TimeoutStage {
     Ack,
     Response,
     Close,
+    Prompt,
 }
 
 impl std::fmt::Display for Error {
@@ -60,6 +66,13 @@ impl std::fmt::Display for Error {
             Self::Disconnected => f.write_str("Control connection closed"),
             Self::Timeout(stage) => write!(f, "Timeout during {stage:?}"),
             Self::AlreadyConnected => f.write_str("Device already has a control session"),
+            Self::PromptPending => {
+                f.write_str("A device prompt requires a response before changing settings")
+            }
+            Self::StalePrompt => f.write_str("The device prompt is no longer current"),
+            Self::InvalidPromptReply => {
+                f.write_str("This response is not supported for the device prompt")
+            }
         }
     }
 }

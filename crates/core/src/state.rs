@@ -1,6 +1,8 @@
 use crate::Error;
+use crate::controls::{supports_audio, supports_system};
 use bluetooth::{DeviceId, TransportKind};
 use libmdr2::{
+    audio::{AudioCapability, AudioKind, AudioParameters, AudioStatus},
     battery::{BatteryKind, BatteryReading, BatteryReadings, BatteryStatus},
     command::{CapabilityInfo, ProtocolInfo, SupportedFunction},
     device::DeviceText,
@@ -8,6 +10,7 @@ use libmdr2::{
         EqualizerBandInfo, EqualizerCapability, EqualizerKind, EqualizerParameters, EqualizerStatus,
     },
     noise::{NoiseCapability, NoiseKind, NoiseParameters, NoiseStatus},
+    system::{SpeakToChatSettings, SystemCapability, SystemKind, SystemParameters, SystemStatus},
     types::DisplayLanguage,
 };
 
@@ -72,6 +75,28 @@ pub struct EqualizerState {
     pub freshness: Freshness,
 }
 
+/// A supported DSEE or connection-priority layout and its current parameters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioState {
+    pub kind: AudioKind,
+    pub capability: Option<AudioCapability>,
+    pub status: Option<AudioStatus>,
+    pub parameters: Option<AudioParameters>,
+    pub freshness: Freshness,
+}
+
+/// Speak-to-Chat ordinary and extended parameters have independent freshness.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemState {
+    pub kind: SystemKind,
+    pub capability: Option<SystemCapability>,
+    pub status: Option<SystemStatus>,
+    pub parameters: Option<SystemParameters>,
+    pub freshness: Freshness,
+    pub extended: Option<SpeakToChatSettings>,
+    pub extended_freshness: Freshness,
+}
+
 /// Accepted messages in one connection generation, without retaining payloads.
 /// Counters saturate at `u64::MAX`; protocol-filtered duplicate frames do not
 /// count twice. Notifications are independent of matched read responses.
@@ -81,6 +106,9 @@ pub struct MessageCounters {
     pub notifications: u64,
     pub noise_parameters_notifications: u64,
     pub equalizer_parameters_notifications: u64,
+    pub audio_parameters_notifications: u64,
+    pub system_parameters_notifications: u64,
+    pub system_extended_notifications: u64,
 }
 
 /// Shared state for all views, belonging to one connection generation.
@@ -99,6 +127,9 @@ pub struct DeviceSnapshot {
     pub batteries: Vec<BatteryEndpoint>,
     pub noise: Vec<NoiseState>,
     pub equalizers: Vec<EqualizerState>,
+    pub audio: Vec<AudioState>,
+    pub system: Vec<SystemState>,
+    pub pending_prompt: Option<crate::DevicePrompt>,
     pub last_error: Option<Error>,
     pub message_counters: MessageCounters,
     /// No unbounded raw-message log is retained.
@@ -125,6 +156,9 @@ impl DeviceSnapshot {
             batteries: Vec::new(),
             noise: Vec::new(),
             equalizers: Vec::new(),
+            audio: Vec::new(),
+            system: Vec::new(),
+            pending_prompt: None,
             last_error: None,
             message_counters: MessageCounters::default(),
             unhandled_messages: 0,
@@ -135,9 +169,18 @@ impl DeviceSnapshot {
         let battery = BatteryKind::from_function(advertised.id);
         let noise = NoiseKind::from_function(advertised.id);
         let eq = EqualizerKind::from_function(advertised.id);
+        let audio = AudioKind::from_function(advertised.id).filter(|kind| supports_audio(*kind));
+        let system = SystemKind::from_function(advertised.id).filter(|kind| supports_system(*kind));
         self.functions.push(FunctionSupport {
-            readable: battery.is_some() || noise.is_some() || eq.is_some(),
-            writable: noise.is_some_and(|kind| kind != NoiseKind::ButtonCycle) || eq.is_some(),
+            readable: battery.is_some()
+                || noise.is_some()
+                || eq.is_some()
+                || audio.is_some()
+                || system.is_some(),
+            writable: noise.is_some_and(|kind| kind != NoiseKind::ButtonCycle)
+                || eq.is_some()
+                || audio.is_some()
+                || system.is_some(),
             advertised,
         });
         if let Some(kind) = battery {
@@ -189,6 +232,30 @@ impl DeviceSnapshot {
                 freshness: Freshness::Unknown,
             });
         }
+        if let Some(kind) = audio
+            && !self.audio.iter().any(|entry| entry.kind == kind)
+        {
+            self.audio.push(AudioState {
+                kind,
+                capability: None,
+                status: None,
+                parameters: None,
+                freshness: Freshness::Unknown,
+            });
+        }
+        if let Some(kind) = system
+            && !self.system.iter().any(|entry| entry.kind == kind)
+        {
+            self.system.push(SystemState {
+                kind,
+                capability: None,
+                status: None,
+                parameters: None,
+                freshness: Freshness::Unknown,
+                extended: None,
+                extended_freshness: Freshness::Unknown,
+            });
+        }
     }
 
     pub(crate) fn battery(&mut self, status: BatteryStatus) {
@@ -235,6 +302,19 @@ impl DeviceSnapshot {
         for entry in &mut self.equalizers {
             if entry.parameters.is_some() {
                 entry.freshness = Freshness::Stale;
+            }
+        }
+        for entry in &mut self.audio {
+            if entry.parameters.is_some() {
+                entry.freshness = Freshness::Stale;
+            }
+        }
+        for entry in &mut self.system {
+            if entry.parameters.is_some() {
+                entry.freshness = Freshness::Stale;
+            }
+            if entry.extended.is_some() {
+                entry.extended_freshness = Freshness::Stale;
             }
         }
     }

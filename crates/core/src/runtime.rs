@@ -8,6 +8,8 @@ use std::{
 
 use bluetooth::{CancellationToken, Connection};
 use libmdr2::{
+    alert::{AlertControl, AlertDecision, AlertMessage},
+    audio::{AudioCapability, AudioKind, AudioParameters, AudioSetting, AudioStatus},
     battery::BatteryKind,
     command::{CapabilityQuery, ExpectedResponse, Notification, Request, Response},
     device::{DeviceInfo, DeviceInfoKind},
@@ -15,6 +17,7 @@ use libmdr2::{
     frame::{Decoder, Frame},
     noise::{NoiseAvailability, NoiseCapability, NoiseKind, NoiseParameters},
     session::{CloseReason, RetryPolicy, Session, SessionEvent, WriteToken},
+    system::{SpeakToChatSettings, SystemKind, SystemParameters, SystemStatus},
     types::{CommandTable, DisplayLanguage},
 };
 use tokio::{
@@ -22,8 +25,13 @@ use tokio::{
     time::{Instant, timeout},
 };
 
-use crate::controls::{EqualizerEdit, equalizer_matches, noise_matches};
-use crate::{ConnectionState, DeviceSnapshot, Error, Freshness, NoiseChange, Result, TimeoutStage};
+use crate::controls::{EqualizerEdit, audio_matches, equalizer_matches, noise_matches};
+use crate::prompts::SettingReadback;
+use crate::{
+    AudioChange, ConnectionState, DeviceSnapshot, Error, Freshness, NoiseChange, Result,
+    SystemChange, TimeoutStage,
+};
+use crate::{DevicePrompt, PromptId, PromptReply};
 
 /// Local budgets. ACK policy is independent from write and response deadlines.
 #[derive(Clone, Debug)]
@@ -41,6 +49,10 @@ pub struct SessionConfig {
     /// must be selected explicitly; no version/model heuristic or fallback runs.
     pub capability_query: CapabilityQuery,
     pub language: DisplayLanguage,
+    /// Report application foreground state during initialization after alert delivery is enabled.
+    pub report_foreground: bool,
+    /// A prompt that expires closes the session; no implicit device decision is sent.
+    pub prompt_timeout: Duration,
 }
 
 impl Default for SessionConfig {
@@ -57,6 +69,8 @@ impl Default for SessionConfig {
             retry_policy: RetryPolicy::default(),
             capability_query: CapabilityQuery::Standard,
             language: DisplayLanguage::ENGLISH,
+            report_foreground: false,
+            prompt_timeout: Duration::from_secs(120),
         }
     }
 }
@@ -80,6 +94,7 @@ impl SessionConfig {
             self.write_timeout,
             self.response_timeout,
             self.close_timeout,
+            self.prompt_timeout,
             self.retry_policy.ack_timeout(),
         ] {
             if duration.is_zero() || Instant::now().checked_add(duration).is_none() {
@@ -99,6 +114,13 @@ pub enum OperationResult {
     Synchronized,
     Confirmed,
     Adjusted,
+    /// A device prompt interrupted the operation. Reconcile reported state and
+    /// retry any unsent steps explicitly; responding does not resume the operation.
+    AwaitingConfirmation,
+    /// A rejected setting was read back at its preflight value.
+    Cancelled,
+    /// An informational or unsupported message was closed locally.
+    Dismissed,
 }
 
 #[derive(Clone)]
@@ -154,8 +176,12 @@ impl DeviceHandle {
             origin: Instant::now(),
             active: None,
             exchange: None,
+            held_prompt_query: None,
             write: None,
             terminal: None,
+            prompt_serial: 0,
+            prompt_deadline: None,
+            prompt_readback: None,
         };
         tokio::spawn(actor.run());
         Ok(handle)
@@ -179,6 +205,23 @@ impl DeviceHandle {
     pub async fn initialize(&self) -> Result<OperationResult> {
         self.submit(Operation::Initialize).await
     }
+    /// Responds to the actor's current received prompt, never to a caller-built message.
+    pub async fn respond_prompt(
+        &self,
+        id: PromptId,
+        reply: PromptReply,
+    ) -> Result<OperationResult> {
+        let snapshot = self.snapshot();
+        if snapshot
+            .pending_prompt
+            .as_ref()
+            .is_none_or(|prompt| prompt.id != id)
+        {
+            return Err(Error::StalePrompt);
+        }
+        self.submit(Operation::RespondPrompt(id, reply)).await
+    }
+
     pub async fn refresh_battery(&self) -> Result<OperationResult> {
         self.submit(Operation::Battery).await
     }
@@ -239,6 +282,30 @@ impl DeviceHandle {
         self.submit(Operation::SetEqualizer(kind, setting)).await
     }
 
+    /// Reads a supported DSEE or connection-priority capability, status and parameters.
+    pub async fn refresh_audio(&self, kind: AudioKind) -> Result<OperationResult> {
+        self.submit(Operation::Audio(kind)).await
+    }
+    /// Applies an audio edit after a fresh preflight and confirms by GET readback.
+    /// A connection-priority transition that disconnects returns an error; no
+    /// operation replay or automatic reconnection is performed.
+    pub async fn set_audio(&self, kind: AudioKind, change: AudioChange) -> Result<OperationResult> {
+        self.submit(Operation::SetAudio(kind, change)).await
+    }
+    /// Reads Speak-to-Chat capability, status, ordinary and extended parameters.
+    pub async fn refresh_system(&self, kind: SystemKind) -> Result<OperationResult> {
+        self.submit(Operation::System(kind)).await
+    }
+    /// Changes one Speak-to-Chat field while preserving the other fields in its
+    /// freshly read parameter set, then confirms that complete set by readback.
+    pub async fn set_system(
+        &self,
+        kind: SystemKind,
+        change: SystemChange,
+    ) -> Result<OperationResult> {
+        self.submit(Operation::SetSystem(kind, change)).await
+    }
+
     async fn submit(&self, operation: Operation) -> Result<OperationResult> {
         if self.lifetime.0.is_cancelled() {
             return Err(Error::Disconnected);
@@ -281,6 +348,7 @@ impl DeviceHandle {
 }
 
 enum Operation {
+    RespondPrompt(PromptId, PromptReply),
     Initialize,
     Battery,
     Noise(NoiseKind),
@@ -289,7 +357,24 @@ enum Operation {
     EqualizerBandInfo(EqualizerKind),
     SetEqualizer(EqualizerKind, EqualizerSetting),
     EditEqualizer(EqualizerKind, EqualizerEdit),
+    Audio(AudioKind),
+    SetAudio(AudioKind, AudioChange),
+    System(SystemKind),
+    SetSystem(SystemKind, SystemChange),
 }
+impl Operation {
+    fn is_setting(&self) -> bool {
+        matches!(
+            self,
+            Self::SetNoise(..)
+                | Self::SetEqualizer(..)
+                | Self::EditEqualizer(..)
+                | Self::SetAudio(..)
+                | Self::SetSystem(..)
+        )
+    }
+}
+
 struct Envelope {
     operation: Operation,
     reply: oneshot::Sender<Result<OperationResult>>,
@@ -301,11 +386,20 @@ struct Active {
     steps: VecDeque<Step>,
     deadline: Instant,
     initializing: bool,
+    setting: bool,
+    responding: bool,
+    prompt_consumed: bool,
+    prompt_at_start: Option<PromptId>,
+    readback: Option<SettingReadback>,
     outcome: OperationResult,
     last_response: Option<Response>,
 }
 
 enum Step {
+    EnableAlerts,
+    RespondPrompt(PromptId, PromptReply),
+    VerifyPrompt(SettingReadback, PromptReply),
+    Setting(Vec<u8>, SettingReadback),
     Query(Request),
     FunctionLists,
     BatteryQueries,
@@ -316,6 +410,11 @@ enum Step {
     BuildEqualizerEdit(EqualizerKind, EqualizerEdit),
     VerifyEqualizer(EqualizerKind, EqualizerSetting),
     RequireEqualizerPreset(EqualizerKind, libmdr2::equalizer::PresetId),
+    BuildAudio(AudioKind, AudioChange),
+    VerifyAudio(AudioKind, AudioSetting),
+    BuildSystem(SystemKind, SystemChange),
+    VerifySystemParameters(SystemKind, SystemParameters),
+    VerifySystemExtended(SystemKind, SpeakToChatSettings),
 }
 struct Exchange {
     expected: Option<ExpectedResponse>,
@@ -346,8 +445,12 @@ struct Actor {
     origin: Instant,
     active: Option<Active>,
     exchange: Option<Exchange>,
+    held_prompt_query: Option<Exchange>,
     write: Option<WriteFuture>,
     terminal: Option<Error>,
+    prompt_serial: u64,
+    prompt_deadline: Option<Instant>,
+    prompt_readback: Option<SettingReadback>,
 }
 
 enum Input {
@@ -428,12 +531,20 @@ impl Actor {
                 }
                 Input::Timer => {
                     let now = Instant::now();
-                    if self
+                    if self.prompt_deadline.is_some_and(|deadline| now >= deadline) {
+                        self.terminal = Some(Error::Timeout(TimeoutStage::Prompt));
+                    } else if self
                         .active
                         .as_ref()
                         .is_some_and(|active| now >= active.deadline)
                     {
                         self.terminal = Some(Error::Timeout(TimeoutStage::Operation));
+                    } else if self.held_prompt_query.as_ref().is_some_and(|query| {
+                        query
+                            .response_deadline
+                            .is_some_and(|deadline| now >= deadline)
+                    }) {
+                        self.terminal = Some(Error::Timeout(TimeoutStage::Response));
                     } else if self.exchange.as_ref().is_some_and(|exchange| {
                         exchange.response.is_none()
                             && exchange.failure.is_none()
@@ -457,6 +568,7 @@ impl Actor {
         let _ = self.session.cancel(self.origin.elapsed());
         self.write = None;
         self.snapshot.connection = ConnectionState::Closing;
+        self.clear_prompt();
         self.snapshot.stale();
         self.publish();
         if let Some(active) = self.active.take() {
@@ -500,6 +612,16 @@ impl Actor {
     }
     fn deadline(&self) -> Option<Instant> {
         let mut result = self.active.as_ref().map(|active| active.deadline);
+        if let Some(deadline) = self.prompt_deadline {
+            result = Some(result.map_or(deadline, |old| old.min(deadline)));
+        }
+        if let Some(deadline) = self
+            .held_prompt_query
+            .as_ref()
+            .and_then(|query| query.response_deadline)
+        {
+            result = Some(result.map_or(deadline, |old| old.min(deadline)));
+        }
         if let Some(duration) = self.session.next_deadline() {
             let deadline = self.origin + duration;
             result = Some(result.map_or(deadline, |old| old.min(deadline)));
@@ -526,6 +648,8 @@ impl Actor {
             return;
         }
         let initializing = matches!(command.operation, Operation::Initialize);
+        let setting = command.operation.is_setting();
+        let responding = matches!(command.operation, Operation::RespondPrompt(..));
         let result = self.plan(command.operation);
         match result {
             Ok(steps) => {
@@ -534,6 +658,15 @@ impl Actor {
                     steps,
                     deadline: Instant::now() + self.config.operation_timeout,
                     initializing,
+                    setting,
+                    responding,
+                    prompt_consumed: false,
+                    prompt_at_start: self
+                        .snapshot
+                        .pending_prompt
+                        .as_ref()
+                        .map(|prompt| prompt.id),
+                    readback: None,
                     outcome: OperationResult::Synchronized,
                     last_response: None,
                 });
@@ -552,8 +685,15 @@ impl Actor {
         {
             return Err(Error::NotReady);
         }
+        if self.held_prompt_query.is_some() && !matches!(operation, Operation::RespondPrompt(..)) {
+            return Err(Error::PromptPending);
+        }
+        if operation.is_setting() && self.snapshot.pending_prompt.is_some() {
+            return Err(Error::PromptPending);
+        }
         let mut steps = VecDeque::new();
         match operation {
+            Operation::RespondPrompt(id, reply) => steps.push_back(Step::RespondPrompt(id, reply)),
             Operation::Initialize => {
                 if self.snapshot.connection == ConnectionState::Ready {
                     return Ok(steps);
@@ -566,6 +706,7 @@ impl Actor {
                     Step::Query(Request::DeviceInfo(DeviceInfoKind::ModelName)),
                     Step::Query(Request::DeviceInfo(DeviceInfoKind::FirmwareVersion)),
                     Step::BatteryQueries,
+                    Step::EnableAlerts,
                 ]);
             }
             Operation::Battery => steps.push_back(Step::BatteryQueries),
@@ -629,13 +770,82 @@ impl Actor {
                     steps.push_back(Step::BuildEqualizerEdit(kind, edit));
                 }
             }
+            Operation::Audio(kind) | Operation::SetAudio(kind, _) => {
+                let state = self
+                    .snapshot
+                    .audio
+                    .iter_mut()
+                    .find(|state| state.kind == kind)
+                    .ok_or(Error::Unsupported(
+                        "audio layout is not advertised or not implemented by the core",
+                    ))?;
+                if kind.has_capability_query() {
+                    steps.push_back(Step::Query(Request::AudioCapability(kind)));
+                } else {
+                    state.capability = Some(AudioCapability::static_connection(kind)?);
+                }
+                steps.extend([
+                    Step::Query(Request::AudioStatus(kind)),
+                    Step::Query(Request::AudioParameters(kind)),
+                ]);
+                if let Operation::SetAudio(_, change) = operation {
+                    steps.push_back(Step::BuildAudio(kind, change));
+                }
+            }
+            Operation::System(kind) | Operation::SetSystem(kind, _) => {
+                if !self.snapshot.system.iter().any(|state| state.kind == kind) {
+                    return Err(Error::Unsupported(
+                        "system layout is not advertised or not implemented by the core",
+                    ));
+                }
+                steps.extend([
+                    Step::Query(Request::SystemCapability(kind)),
+                    Step::Query(Request::SystemStatus(kind)),
+                ]);
+                if let Operation::SetSystem(_, change) = operation {
+                    steps.push_back(Step::Query(if change.is_extended() {
+                        Request::SystemExtendedParameters(kind)
+                    } else {
+                        Request::SystemParameters(kind)
+                    }));
+                    steps.push_back(Step::BuildSystem(kind, change));
+                } else {
+                    steps.extend([
+                        Step::Query(Request::SystemParameters(kind)),
+                        Step::Query(Request::SystemExtendedParameters(kind)),
+                    ]);
+                }
+            }
         }
         Ok(steps)
+    }
+
+    fn prompt_interrupts_active(&self) -> bool {
+        self.snapshot.pending_prompt.as_ref().is_some_and(|prompt| {
+            self.active.as_ref().is_some_and(|active| {
+                !active.initializing && active.prompt_at_start != Some(prompt.id)
+            })
+        })
     }
 
     fn drive(&mut self) {
         if self.terminal.is_some() {
             return;
+        }
+        if self.snapshot.pending_prompt.is_some()
+            && self.active.as_ref().is_some_and(|active| {
+                !active.initializing && (!active.responding || active.prompt_consumed)
+            })
+            && self.exchange.as_ref().is_some_and(|exchange| {
+                exchange.acknowledged && exchange.expected.is_some() && !exchange.complete()
+            })
+        {
+            let mut query = self.exchange.take().expect("acknowledged prompt query");
+            query.response_deadline = None;
+            self.held_prompt_query = Some(query);
+            if let Some(active) = &mut self.active {
+                active.prompt_at_start = None;
+            }
         }
         if let Some(exchange) = &self.exchange {
             if !exchange.complete() {
@@ -662,6 +872,30 @@ impl Actor {
                 self.publish();
             }
         }
+        if self.exchange.is_none() && self.prompt_interrupts_active() {
+            let active = self
+                .active
+                .take()
+                .expect("active operation interrupted by prompt");
+            if let Some(query) = &mut self.held_prompt_query {
+                query.response_deadline = None;
+            }
+            self.publish();
+            let _ = active.reply.send(Ok(OperationResult::AwaitingConfirmation));
+        }
+        if self.held_prompt_query.is_some()
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.prompt_consumed)
+        {
+            if let Some(query) = &mut self.held_prompt_query {
+                query
+                    .response_deadline
+                    .get_or_insert(Instant::now() + self.config.response_timeout);
+            }
+            return;
+        }
         while self.active.is_some() && self.exchange.is_none() && self.terminal.is_none() {
             if self
                 .active
@@ -669,6 +903,23 @@ impl Actor {
                 .is_some_and(|active| active.reply.is_closed())
             {
                 self.terminal = Some(Error::Cancelled);
+                break;
+            }
+            if self.held_prompt_query.is_some()
+                && self
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.prompt_consumed)
+                && self
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| !matches!(active.steps.front(), Some(Step::Send(_))))
+            {
+                if let Some(query) = &mut self.held_prompt_query {
+                    query
+                        .response_deadline
+                        .get_or_insert(Instant::now() + self.config.response_timeout);
+                }
                 break;
             }
             let step = self
@@ -718,6 +969,87 @@ impl Actor {
 
     fn step(&mut self, step: Step) -> Result<()> {
         match step {
+            Step::EnableAlerts => {
+                if self.snapshot.functions.iter().any(|entry| {
+                    entry.advertised.id.table == CommandTable::TABLE_1
+                        && entry.advertised.id.code == 0x90
+                }) {
+                    let mut steps = vec![Step::Send(
+                        AlertControl::EnableFixedMessages.encode().to_vec(),
+                    )];
+                    if self.config.report_foreground {
+                        steps.push(Step::Send(
+                            AlertControl::ApplicationForeground.encode().to_vec(),
+                        ));
+                    }
+                    self.prepend(steps);
+                }
+            }
+            Step::RespondPrompt(id, reply) => {
+                if self
+                    .prompt_deadline
+                    .is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    let error = Error::Timeout(TimeoutStage::Prompt);
+                    self.terminal = Some(error.clone());
+                    return Err(error);
+                }
+                let prompt = self
+                    .snapshot
+                    .pending_prompt
+                    .as_ref()
+                    .ok_or(Error::StalePrompt)?;
+                if id.generation != self.snapshot.generation || prompt.id != id {
+                    return Err(Error::StalePrompt);
+                }
+                if !prompt.allows(reply) {
+                    return Err(Error::InvalidPromptReply);
+                }
+                let payload = match reply {
+                    PromptReply::Accept => {
+                        Some(prompt.message.encode_reply(AlertDecision::Accept)?)
+                    }
+                    PromptReply::Reject => {
+                        Some(prompt.message.encode_reply(AlertDecision::Reject)?)
+                    }
+                    PromptReply::Dismiss => None,
+                };
+                let readback = self.prompt_readback.take();
+                self.clear_prompt();
+                self.publish();
+                if let Some(active) = &mut self.active {
+                    active.prompt_consumed = true;
+                }
+                if let Some(payload) = payload {
+                    let mut steps = vec![Step::Send(payload)];
+                    if let Some(readback) = readback {
+                        steps.push(Step::Query(readback.query()));
+                        steps.push(Step::VerifyPrompt(readback, reply));
+                    } else {
+                        steps.extend(self.prompt_refresh_steps());
+                    }
+                    self.prepend(steps);
+                } else {
+                    if let Some(active) = &mut self.active {
+                        active.outcome = OperationResult::Dismissed;
+                    }
+                    self.prepend(self.prompt_refresh_steps());
+                }
+            }
+            Step::VerifyPrompt(readback, reply) => {
+                let active = self.active.as_mut().ok_or(Error::NotReady)?;
+                active.outcome = readback
+                    .verify(active.last_response.as_ref().ok_or(Error::NotReady)?, reply)?;
+            }
+            Step::Setting(payload, readback) => {
+                if self.snapshot.pending_prompt.is_some() {
+                    return Err(Error::PromptPending);
+                }
+                if let Some(active) = &mut self.active {
+                    active.readback = Some(readback);
+                }
+                self.step(Step::Send(payload))?;
+            }
             Step::Query(request) => {
                 let critical = matches!(
                     &request,
@@ -814,7 +1146,14 @@ impl Actor {
                 let payload =
                     desired.encode_set(state.capability.as_ref().ok_or(Error::NotReady)?)?;
                 self.prepend([
-                    Step::Send(payload),
+                    Step::Setting(
+                        payload,
+                        SettingReadback::Noise(
+                            kind,
+                            desired,
+                            state.parameters.ok_or(Error::NotReady)?,
+                        ),
+                    ),
                     Step::Query(Request::NoiseParameters(kind)),
                     Step::VerifyNoise(kind, desired),
                 ]);
@@ -884,7 +1223,10 @@ impl Actor {
                     }
                     let selection = select.encode_set(capability)?;
                     self.prepend([
-                        Step::Send(selection),
+                        Step::Setting(
+                            selection,
+                            SettingReadback::Equalizer(kind, setting.clone(), current.clone()),
+                        ),
                         Step::Query(Request::EqualizerParameters(kind)),
                         Step::RequireEqualizerPreset(kind, preset),
                         Step::Query(Request::EqualizerStatus(kind)),
@@ -892,7 +1234,10 @@ impl Actor {
                     ]);
                 } else {
                     self.prepend([
-                        Step::Send(payload),
+                        Step::Setting(
+                            payload,
+                            SettingReadback::Equalizer(kind, setting.clone(), current.clone()),
+                        ),
                         Step::Query(Request::EqualizerParameters(kind)),
                         Step::VerifyEqualizer(kind, setting),
                     ]);
@@ -952,8 +1297,181 @@ impl Actor {
                     };
                 }
             }
+            Step::BuildAudio(kind, change) => {
+                let state = self
+                    .snapshot
+                    .audio
+                    .iter()
+                    .find(|state| state.kind == kind)
+                    .ok_or(Error::NotReady)?;
+                if state.status.as_ref().is_none_or(|status| !status.enabled) {
+                    return Err(Error::Unavailable("audio control"));
+                }
+                let desired = change.apply(state.parameters.as_ref().ok_or(Error::NotReady)?)?;
+                let payload =
+                    desired.encode_set(state.capability.as_ref().ok_or(Error::NotReady)?)?;
+                self.prepend([
+                    Step::Setting(
+                        payload,
+                        SettingReadback::Audio(
+                            kind,
+                            desired.clone(),
+                            state.parameters.as_ref().ok_or(Error::NotReady)?.clone(),
+                        ),
+                    ),
+                    Step::Query(Request::AudioParameters(kind)),
+                    Step::VerifyAudio(kind, desired),
+                ]);
+            }
+            Step::VerifyAudio(kind, desired) => {
+                let actual = match self
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.last_response.as_ref())
+                {
+                    Some(Response::AudioParameters(parameters)) if parameters.kind() == kind => {
+                        parameters
+                    }
+                    _ => return Err(Error::NotReady),
+                };
+                self.record_confirmation(audio_matches(&desired, actual));
+            }
+            Step::BuildSystem(kind, change) => {
+                let state = self
+                    .snapshot
+                    .system
+                    .iter()
+                    .find(|state| state.kind == kind)
+                    .ok_or(Error::NotReady)?;
+                if state.status.is_none_or(|status| !status.enabled) {
+                    return Err(Error::Unavailable("Speak-to-Chat"));
+                }
+                let capability = state.capability.as_ref().ok_or(Error::NotReady)?;
+                if change.is_extended() {
+                    let desired = change.apply_extended(state.extended.ok_or(Error::NotReady)?)?;
+                    let payload = desired.encode_set(capability)?;
+                    self.prepend([
+                        Step::Setting(
+                            payload,
+                            SettingReadback::Extended(
+                                kind,
+                                desired,
+                                state.extended.ok_or(Error::NotReady)?,
+                            ),
+                        ),
+                        Step::Query(Request::SystemExtendedParameters(kind)),
+                        Step::VerifySystemExtended(kind, desired),
+                    ]);
+                } else {
+                    let desired =
+                        change.apply_parameters(state.parameters.ok_or(Error::NotReady)?)?;
+                    let payload = desired.encode_set(capability)?;
+                    self.prepend([
+                        Step::Setting(
+                            payload,
+                            SettingReadback::System(
+                                kind,
+                                desired,
+                                state.parameters.ok_or(Error::NotReady)?,
+                            ),
+                        ),
+                        Step::Query(Request::SystemParameters(kind)),
+                        Step::VerifySystemParameters(kind, desired),
+                    ]);
+                }
+            }
+            Step::VerifySystemParameters(kind, desired) => {
+                let actual = match self
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.last_response.as_ref())
+                {
+                    Some(Response::SystemParameters(parameters)) if parameters.kind() == kind => {
+                        *parameters
+                    }
+                    _ => return Err(Error::NotReady),
+                };
+                self.record_confirmation(desired == actual);
+            }
+            Step::VerifySystemExtended(kind, desired) => {
+                let actual = match self
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.last_response.as_ref())
+                {
+                    Some(Response::SystemExtendedParameters(parameters))
+                        if parameters.kind() == kind =>
+                    {
+                        *parameters
+                    }
+                    _ => return Err(Error::NotReady),
+                };
+                self.record_confirmation(desired == actual);
+            }
         }
         Ok(())
+    }
+
+    fn clear_prompt(&mut self) {
+        self.snapshot.pending_prompt = None;
+        self.prompt_deadline = None;
+        self.prompt_readback = None;
+    }
+
+    fn receive_prompt(&mut self, message: AlertMessage) {
+        let Some(serial) = self.prompt_serial.checked_add(1) else {
+            self.terminal = Some(Error::Protocol("prompt identity exhausted".into()));
+            return;
+        };
+        self.prompt_serial = serial;
+        // Only an active setting already transmitted on this connection can be
+        // associated. Preflight, late and replacement prompts remain independent.
+        self.prompt_readback = if self.snapshot.pending_prompt.is_none() {
+            self.active
+                .as_ref()
+                .filter(|active| active.setting && !active.responding)
+                .and_then(|active| active.readback.as_ref())
+                .filter(|readback| readback.relates_to(&message))
+                .cloned()
+        } else {
+            None
+        };
+        self.snapshot.pending_prompt = Some(DevicePrompt {
+            id: PromptId {
+                generation: self.snapshot.generation,
+                serial,
+            },
+            message,
+        });
+        self.prompt_deadline = Some(Instant::now() + self.config.prompt_timeout);
+    }
+
+    fn prompt_refresh_steps(&self) -> Vec<Step> {
+        let mut steps = Vec::new();
+        for state in &self.snapshot.noise {
+            steps.push(Step::Query(Request::NoiseParameters(state.kind)));
+        }
+        for state in &self.snapshot.equalizers {
+            steps.push(Step::Query(Request::EqualizerParameters(state.kind)));
+        }
+        for state in &self.snapshot.audio {
+            steps.push(Step::Query(Request::AudioParameters(state.kind)));
+        }
+        for state in &self.snapshot.system {
+            steps.push(Step::Query(Request::SystemParameters(state.kind)));
+            steps.push(Step::Query(Request::SystemExtendedParameters(state.kind)));
+        }
+        steps
+    }
+
+    fn record_confirmation(&mut self, confirmed: bool) {
+        if let Some(active) = &mut self.active {
+            active.outcome = if confirmed {
+                OperationResult::Confirmed
+            } else {
+                OperationResult::Adjusted
+            };
+        }
     }
 
     fn effects(&mut self, events: Vec<SessionEvent>) {
@@ -1010,6 +1528,20 @@ impl Actor {
         let Some(table) = frame.data_type.command_table() else {
             return;
         };
+        if let Some(expected) = self
+            .held_prompt_query
+            .as_ref()
+            .and_then(|query| query.expected)
+            && expected.matches(table, &frame.payload)
+        {
+            self.held_prompt_query = None;
+            match expected.decode(table, &frame.payload) {
+                Ok(response) => self.project_response(response),
+                Err(error) => self.snapshot.last_error = Some(error.into()),
+            }
+            self.publish();
+            return;
+        }
         if let Some(exchange) = &mut self.exchange
             && let Some(expected) = exchange.expected
             && expected.matches(table, &frame.payload)
@@ -1118,6 +1650,31 @@ impl Actor {
             }
             Response::EqualizerStatus(status) => self.eq_status(status),
             Response::EqualizerParameters(parameters) => self.eq_parameters(parameters),
+            Response::AudioCapability(capability) => {
+                if let Some(state) = self
+                    .snapshot
+                    .audio
+                    .iter_mut()
+                    .find(|state| state.kind == capability.kind())
+                {
+                    state.capability = Some(capability);
+                }
+            }
+            Response::AudioStatus(status) => self.audio_status(status),
+            Response::AudioParameters(parameters) => self.audio_parameters(parameters),
+            Response::SystemCapability(capability) => {
+                if let Some(state) = self
+                    .snapshot
+                    .system
+                    .iter_mut()
+                    .find(|state| state.kind == capability.kind())
+                {
+                    state.capability = Some(capability);
+                }
+            }
+            Response::SystemStatus(status) => self.system_status(status),
+            Response::SystemParameters(parameters) => self.system_parameters(parameters),
+            Response::SystemExtendedParameters(parameters) => self.system_extended(parameters),
             _ => {
                 self.snapshot.unhandled_messages =
                     self.snapshot.unhandled_messages.saturating_add(1)
@@ -1132,6 +1689,7 @@ impl Actor {
             .notifications
             .saturating_add(1);
         match notification {
+            Notification::AlertMessage(message) => self.receive_prompt(message),
             Notification::BatteryStatus(status) => self.snapshot.battery(status),
             Notification::NoiseStatus(status) => self.noise_status(status),
             Notification::NoiseParameters(parameters) => {
@@ -1154,6 +1712,36 @@ impl Actor {
                     .equalizer_parameters_notifications
                     .saturating_add(1);
                 self.eq_parameters(parameters);
+            }
+            Notification::AudioStatus(status) => self.audio_status(status),
+            Notification::AudioParameters(parameters) => {
+                self.snapshot
+                    .message_counters
+                    .audio_parameters_notifications = self
+                    .snapshot
+                    .message_counters
+                    .audio_parameters_notifications
+                    .saturating_add(1);
+                self.audio_parameters(parameters);
+            }
+            Notification::SystemStatus(status) => self.system_status(status),
+            Notification::SystemParameters(parameters) => {
+                self.snapshot
+                    .message_counters
+                    .system_parameters_notifications = self
+                    .snapshot
+                    .message_counters
+                    .system_parameters_notifications
+                    .saturating_add(1);
+                self.system_parameters(parameters);
+            }
+            Notification::SystemExtendedParameters(parameters) => {
+                self.snapshot.message_counters.system_extended_notifications = self
+                    .snapshot
+                    .message_counters
+                    .system_extended_notifications
+                    .saturating_add(1);
+                self.system_extended(parameters);
             }
             // Transport requests require caller policy; never silently act on an
             // address supplied by a protocol notification.
@@ -1203,6 +1791,59 @@ impl Actor {
         {
             state.parameters = Some(parameters);
             state.freshness = Freshness::Current;
+        }
+    }
+    fn audio_status(&mut self, status: AudioStatus) {
+        if let Some(state) = self
+            .snapshot
+            .audio
+            .iter_mut()
+            .find(|state| state.kind == status.kind())
+        {
+            state.status = Some(status);
+        }
+    }
+    fn audio_parameters(&mut self, parameters: AudioParameters) {
+        if let Some(state) = self
+            .snapshot
+            .audio
+            .iter_mut()
+            .find(|state| state.kind == parameters.kind())
+        {
+            state.parameters = Some(parameters);
+            state.freshness = Freshness::Current;
+        }
+    }
+    fn system_status(&mut self, status: SystemStatus) {
+        if let Some(state) = self
+            .snapshot
+            .system
+            .iter_mut()
+            .find(|state| state.kind == status.kind())
+        {
+            state.status = Some(status);
+        }
+    }
+    fn system_parameters(&mut self, parameters: SystemParameters) {
+        if let Some(state) = self
+            .snapshot
+            .system
+            .iter_mut()
+            .find(|state| state.kind == parameters.kind())
+        {
+            state.parameters = Some(parameters);
+            state.freshness = Freshness::Current;
+        }
+    }
+    fn system_extended(&mut self, parameters: SpeakToChatSettings) {
+        if let Some(state) = self
+            .snapshot
+            .system
+            .iter_mut()
+            .find(|state| state.kind == parameters.kind())
+        {
+            state.extended = Some(parameters);
+            state.extended_freshness = Freshness::Current;
         }
     }
 }

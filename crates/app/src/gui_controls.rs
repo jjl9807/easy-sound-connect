@@ -2,19 +2,26 @@
 //! buttons submit explicit changes and never optimistically rewrite live state.
 
 use ezsc_core::{
-    ConnectionState, DeviceHandle, EqualizerState, Freshness, NoiseChange, NoiseState,
+    AudioChange, ConnectionState, DeviceHandle, EqualizerState, Freshness, NoiseChange, NoiseState,
+    SystemChange,
+    audio::AudioKind,
     equalizer::{BandInformation, EqualizerKind, Preset, PresetId},
     noise::{
         AdaptiveSensitivity, AmbientLevelRange, AmbientMode, NoiseAvailability, NoiseKind,
         NoiseMode, NoiseParameters, NoiseSettings, NoiseSwitch,
     },
+    system::SystemKind,
 };
 use gpui::{Context, Div, div, prelude::*, rgb};
 
+use crate::gui_daily_controls::{audio_change_ready, system_change_ready};
 use crate::{Desktop, Event, button};
 
 pub(super) async fn refresh_controls(handle: &DeviceHandle) -> Result<(), String> {
     let snapshot = handle.snapshot();
+    if snapshot.connection != ConnectionState::Ready {
+        return Err("The control connection is not ready.".into());
+    }
     let mut failures = Vec::new();
     for entry in snapshot.noise {
         if entry.kind == NoiseKind::ButtonCycle {
@@ -22,11 +29,33 @@ pub(super) async fn refresh_controls(handle: &DeviceHandle) -> Result<(), String
         }
         if let Err(error) = handle.refresh_noise(entry.kind).await {
             failures.push(format!("Noise control: {error}"));
+            if handle.snapshot().connection != ConnectionState::Ready {
+                return Err(failures.join("; "));
+            }
         }
     }
     for entry in snapshot.equalizers {
         if let Err(error) = handle.refresh_equalizer(entry.kind).await {
             failures.push(format!("Equalizer: {error}"));
+            if handle.snapshot().connection != ConnectionState::Ready {
+                return Err(failures.join("; "));
+            }
+        }
+    }
+    for entry in snapshot.audio {
+        if let Err(error) = handle.refresh_audio(entry.kind).await {
+            failures.push(format!("Audio control: {error}"));
+            if handle.snapshot().connection != ConnectionState::Ready {
+                return Err(failures.join("; "));
+            }
+        }
+    }
+    for entry in snapshot.system {
+        if let Err(error) = handle.refresh_system(entry.kind).await {
+            failures.push(format!("Speak-to-Chat: {error}"));
+            if handle.snapshot().connection != ConnectionState::Ready {
+                return Err(failures.join("; "));
+            }
         }
     }
     if failures.is_empty() {
@@ -37,8 +66,10 @@ pub(super) async fn refresh_controls(handle: &DeviceHandle) -> Result<(), String
 }
 
 #[derive(Clone, Copy)]
-enum ControlAction {
+pub(super) enum ControlAction {
     Noise(NoiseKind, NoiseChange),
+    Audio(AudioKind, AudioChange),
+    System(SystemKind, SystemChange),
     Preset(EqualizerKind, PresetId),
     Band {
         kind: EqualizerKind,
@@ -50,11 +81,11 @@ enum ControlAction {
 }
 
 impl Desktop {
-    fn submit_control(&mut self, action: ControlAction, label: String) {
+    pub(super) fn submit_control(&mut self, action: ControlAction, label: String) {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
-        if self.busy || snapshot.connection != ConnectionState::Ready {
+        if self.settings_blocked() || snapshot.connection != ConnectionState::Ready {
             return;
         }
         let allowed = match action {
@@ -63,6 +94,16 @@ impl Desktop {
                 .iter()
                 .find(|entry| entry.kind == kind)
                 .is_some_and(noise_ready),
+            ControlAction::Audio(kind, change) => snapshot
+                .audio
+                .iter()
+                .find(|entry| entry.kind == kind)
+                .is_some_and(|entry| audio_change_ready(entry, change)),
+            ControlAction::System(kind, change) => snapshot
+                .system
+                .iter()
+                .find(|entry| entry.kind == kind)
+                .is_some_and(|entry| system_change_ready(entry, change)),
             ControlAction::Preset(kind, _)
             | ControlAction::Band { kind, .. }
             | ControlAction::BandInfo(kind) => snapshot
@@ -84,6 +125,8 @@ impl Desktop {
         self.runtime.spawn(async move {
             let result = match action {
                 ControlAction::Noise(kind, change) => handle.set_noise(kind, change).await,
+                ControlAction::Audio(kind, change) => handle.set_audio(kind, change).await,
+                ControlAction::System(kind, change) => handle.set_system(kind, change).await,
                 ControlAction::Preset(kind, preset) => {
                     handle.set_equalizer_preset(kind, preset).await
                 }
@@ -106,7 +149,7 @@ impl Desktop {
             return cards;
         };
         let session_ready = snapshot.connection == ConnectionState::Ready;
-        let editable = session_ready && !self.busy;
+        let editable = session_ready && !self.settings_blocked();
         for (index, entry) in snapshot.noise.iter().enumerate() {
             if entry.kind == NoiseKind::ButtonCycle {
                 continue;
@@ -625,7 +668,7 @@ fn band_label(index: usize, info: BandInformation) -> String {
         format!("Band {}", index + 1)
     }
 }
-fn card(title: &'static str) -> Div {
+pub(super) fn card(title: &'static str) -> Div {
     div()
         .flex()
         .flex_col()
@@ -636,10 +679,10 @@ fn card(title: &'static str) -> Div {
         .bg(rgb(0x222227))
         .child(div().text_lg().child(title))
 }
-fn note(text: impl Into<gpui::SharedString>) -> Div {
+pub(super) fn note(text: impl Into<gpui::SharedString>) -> Div {
     div().text_sm().text_color(rgb(0xb7b7c4)).child(text.into())
 }
-fn availability(ready: bool, busy: bool, freshness: Freshness, available: bool) -> Div {
+pub(super) fn availability(ready: bool, busy: bool, freshness: Freshness, available: bool) -> Div {
     note(if !ready {
         "Controls become available when the connection is ready."
     } else if busy {
@@ -652,7 +695,7 @@ fn availability(ready: bool, busy: bool, freshness: Freshness, available: bool) 
         "Showing current values reported by the headset."
     })
 }
-fn action_button(
+pub(super) fn action_button(
     id: impl Into<gpui::ElementId>,
     label: impl Into<gpui::SharedString>,
     enabled: bool,

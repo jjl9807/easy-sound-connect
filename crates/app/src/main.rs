@@ -7,7 +7,7 @@ use std::{error::Error, time::Duration};
 use bluetooth::{DeviceId, TransportKind};
 use ezsc_core::{DeviceManager, DeviceSnapshot, SessionConfig};
 
-const USAGE: &str = "Usage:\n  ezsc-probe --list\n  ezsc-probe --device <platform-id> --transport <gatt|rfcomm> [--controls] [--band-info] [--exercise-controls] [--watch <seconds>]\n\nPair the headset in system settings first. --list only enumerates paired devices.\nThe default probe reads identity and battery; --controls also reads noise and EQ.\n--band-info additionally queries optional EQ band labels.\n--exercise-controls explicitly CHANGES supported noise effect/mode/level/voice/\nadaptation settings, EQ preset and one custom curve band, verifies readback and\nrestores saved settings after each check.\n--watch receives updates (default: 10 seconds). Ctrl+C during an exercise waits\nfor the current check and restoration before releasing the connection.";
+const USAGE: &str = "Usage:\n  ezsc-probe --list\n  ezsc-probe --device <platform-id> --transport <gatt|rfcomm> [--controls] [--band-info] [--exercise-controls] [--watch <seconds>]\n\nPair the headset in system settings first. --list only enumerates paired devices.\nThe default probe reads identity and battery; --controls also reads noise, EQ,\nDSEE, connection priority and Speak-to-Chat when advertised.\n--band-info additionally queries optional EQ band labels.\n--exercise-controls explicitly CHANGES supported noise effect/mode/level/voice/\nadaptation settings, EQ preset and one custom curve band, verifies readback and\nrestores saved settings after each check.\n--watch receives updates (default: 10 seconds). Ctrl+C during an exercise waits\nfor the current check and restoration before releasing the connection.";
 
 enum Command {
     List,
@@ -176,9 +176,17 @@ async fn probe(
                         handle.refresh_equalizer_band_info(state.kind).await?;
                     }
                 }
+                for state in advertised.audio {
+                    handle.refresh_audio(state.kind).await?;
+                }
+                for state in advertised.system {
+                    handle.refresh_system(state.kind).await?;
+                }
                 let snapshot = handle.snapshot();
                 println!("Noise controls: {:#?}", snapshot.noise);
                 println!("Equalizers: {:#?}", snapshot.equalizers);
+                println!("Audio controls: {:#?}", snapshot.audio);
+                println!("System controls: {:#?}", snapshot.system);
             }
             if exercise {
                 exercise::run(manager, &mut handle, &stop).await?;

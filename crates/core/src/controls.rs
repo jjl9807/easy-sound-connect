@@ -1,4 +1,7 @@
 use crate::{Error, Result};
+mod daily;
+pub use daily::{AudioChange, SystemChange};
+pub(crate) use daily::{audio_matches, supports_audio, supports_system};
 use libmdr2::{
     equalizer::{
         EqualizerCapability, EqualizerKind, EqualizerParameters, EqualizerSetting, PresetId,

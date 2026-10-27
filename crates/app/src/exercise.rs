@@ -17,6 +17,8 @@ type CheckResult = Result<(), Box<dyn Error>>;
 fn confirmed(result: OperationResult) -> CheckResult {
     if result == OperationResult::Confirmed {
         Ok(())
+    } else if result == OperationResult::AwaitingConfirmation {
+        Err("The headset is waiting for an explicit user decision. This CLI check does not answer device prompts. End this control session and repeat the change in the GUI for interactive confirmation.".into())
     } else {
         Err(format!("Expected confirmed readback, received {result:?}").into())
     }
@@ -278,5 +280,14 @@ mod tests {
     #[test]
     fn adjustment_is_not_reported_as_success() {
         assert!(confirmed(OperationResult::Adjusted).is_err());
+    }
+
+    #[test]
+    fn pending_confirmation_explains_that_cli_does_not_answer_prompts() {
+        let error = confirmed(OperationResult::AwaitingConfirmation)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("explicit user decision"));
+        assert!(error.contains("does not answer device prompts"));
     }
 }

@@ -2,6 +2,8 @@
 
 use ezsc_core::{BatteryComponent, ConnectionState, DeviceSnapshot, Freshness};
 
+pub mod device_prompts;
+
 pub fn connection_label(state: ConnectionState) -> &'static str {
     match state {
         ConnectionState::Connected => "Connected",
@@ -66,6 +68,12 @@ pub fn control_lines(snapshot: &DeviceSnapshot) -> Vec<String> {
         "Generation: {} · messages: {:?}",
         snapshot.generation, snapshot.message_counters
     )];
+    if let Some(prompt) = &snapshot.pending_prompt {
+        lines.push(format!(
+            "Pending device prompt: {:?} · {:?}",
+            prompt.id, prompt.message
+        ));
+    }
     for state in &snapshot.noise {
         lines.push(format!(
             "Noise {:?}: {:?} · {:?} · {:?}",
@@ -76,6 +84,22 @@ pub fn control_lines(snapshot: &DeviceSnapshot) -> Vec<String> {
         lines.push(format!(
             "EQ {:?}: {:?} · {:?} · {:?}",
             state.kind, state.parameters, state.status, state.freshness
+        ));
+    }
+    for state in &snapshot.audio {
+        lines.push(format!(
+            "Audio {:?}: {:?} · {:?} · {:?}",
+            state.kind, state.parameters, state.status, state.freshness
+        ));
+    }
+    for state in &snapshot.system {
+        lines.push(format!(
+            "System {:?}: {:?} · {:?} · {:?}",
+            state.kind, state.parameters, state.status, state.freshness
+        ));
+        lines.push(format!(
+            "System extended {:?}: {:?} · {:?}",
+            state.kind, state.extended, state.extended_freshness
         ));
     }
     lines
