@@ -1,93 +1,181 @@
 //! Device-reported audio and Speak-to-Chat controls.
 
+use crate::{
+    Desktop,
+    gui_controls::{ControlAction, availability, card, control_button, note},
+};
 use ezsc_core::{
     AudioChange, AudioState, ConnectionState, Freshness, SystemChange, SystemState,
     audio::{AudioCapabilityData, AudioKind, AudioParameterValue, DseeMode, PriorityMode},
     system::{DetectionSensitivity, ModeOutTime, SpeakToChatSettings, SystemKind},
 };
-use gpui::{Context, Div, ElementId, SharedString, Stateful, div, prelude::*};
-
-use crate::{
-    Desktop,
-    gui_controls::{ControlAction, action_button, availability, card, note},
-};
+use gpui_kit::component::{Disableable, switch::Switch};
+use gpui_kit::{Context, Div, div, prelude::*};
 
 impl Desktop {
     pub(super) fn render_daily_controls(&self, cx: &mut Context<Self>) -> Div {
-        let mut cards = div().flex().flex_col().flex_shrink_0().gap_4().pb_6();
-        let Some(snapshot) = &self.snapshot else {
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(self.render_audio_controls(cx))
+            .child(self.render_speak_controls(cx))
+    }
+
+    pub(super) fn render_audio_controls(&self, cx: &mut Context<Self>) -> Div {
+        let language = self.language(cx);
+        let state = self.session.read(cx);
+        let (snapshot, busy, blocked) = (
+            state.snapshot.clone(),
+            state.busy,
+            state.settings_blocked() || state.preview,
+        );
+        let mut cards = div().flex().flex_col().gap_4();
+        let Some(snapshot) = snapshot else {
             return cards;
         };
         let ready = snapshot.connection == ConnectionState::Ready;
-        let editable = ready && !self.settings_blocked();
+        let editable = ready && !blocked;
         for (index, entry) in snapshot.audio.iter().enumerate() {
             let title = match entry.kind {
                 AudioKind::Dsee | AudioKind::DseeWithReasons => "DSEE",
                 AudioKind::ConnectionPriority
                 | AudioKind::ConnectionPriorityWithStatus
-                | AudioKind::ClassicLePriority => "Bluetooth connection quality",
+                | AudioKind::ClassicLePriority
+                    if !self.compact =>
+                {
+                    language.text("Connection quality", "连接质量")
+                }
                 _ => continue,
             };
-            let mut section = card(title).child(availability(
+            let mut section = card(title, cx).child(availability(
                 ready,
-                self.busy,
+                busy,
                 entry.freshness,
                 entry.status.as_ref().is_some_and(|status| status.enabled),
+                language,
+                cx,
             ));
-            let mut options = div().flex().flex_wrap().gap_2();
             match entry
                 .parameters
                 .as_ref()
                 .map(|parameters| parameters.value())
             {
                 Some(AudioParameterValue::Dsee(current)) => {
-                    section = section.child(note(
-                        "Auto allows the headset to use DSEE when applicable; this setting does not report whether processing is active.",
-                    ));
-                    for (choice_index, (value, label)) in
-                        [(DseeMode::Auto, "Auto"), (DseeMode::Off, "Off")]
-                            .into_iter()
-                            .enumerate()
-                    {
-                        let change = AudioChange::Dsee(value);
-                        options = options.child(choice_button(
-                            ("dsee", index * 2 + choice_index),
-                            label,
-                            format!("DSEE {label}"),
-                            ControlAction::Audio(entry.kind, change),
-                            editable && audio_change_ready(entry, change),
-                            *current == value,
+                    let kind = entry.kind;
+                    let change = AudioChange::Dsee(if *current == DseeMode::Auto {
+                        DseeMode::Off
+                    } else {
+                        DseeMode::Auto
+                    });
+                    let enabled = editable && audio_change_ready(entry, change);
+                    let session = self.session.clone();
+                    section = section.child(
+                        Switch::new(("dsee", index))
+                            .label(language.text("Auto", "自动"))
+                            .checked(*current == DseeMode::Auto)
+                            .disabled(!enabled)
+                            .on_change(move |value, _, cx| {
+                                session.update(cx, |session, cx| {
+                                    session.submit_control(
+                                        ControlAction::Audio(
+                                            kind,
+                                            AudioChange::Dsee(if *value {
+                                                DseeMode::Auto
+                                            } else {
+                                                DseeMode::Off
+                                            }),
+                                        ),
+                                        "DSEE".into(),
+                                    );
+                                    cx.notify();
+                                })
+                            }),
+                    );
+                    if !self.compact {
+                        section = section.child(note(
+                            language.text(
+                                "Allows the headset to use DSEE when applicable.",
+                                "允许耳机在适用时自动使用 DSEE。",
+                            ),
                             cx,
                         ));
                     }
                 }
                 Some(AudioParameterValue::ConnectionPriority { priority, .. }) => {
-                    section = section
-                        .child(format!("Current setting: {}", priority_label(*priority)))
-                        .child(note(if is_classic_priority(*priority) {
-                            "Changing Bluetooth connection quality may interrupt the control connection. Release control and reconnect if it ends."
-                        } else {
-                            "These controls are available in Classic Audio. Use SONY | Sound Connect to change the headset connection mode."
-                        }));
-                    for (choice_index, choice) in priority_choices(entry).into_iter().enumerate() {
+                    let current = if *priority == PriorityMode::SOUND_QUALITY {
+                        language.text("Sound quality", "音质优先").into()
+                    } else if *priority == PriorityMode::CONNECTION_QUALITY {
+                        language.text("Stable connection", "稳定连接优先").into()
+                    } else {
+                        priority_label(*priority)
+                    };
+                    section = section.child(note(
+                        format!("{}: {current}", language.text("Current", "当前")),
+                        cx,
+                    ));
+                    let mut choices = div().flex().flex_wrap().gap_2();
+                    for (slot, choice) in priority_choices(entry).into_iter().enumerate() {
                         let change = AudioChange::Priority(choice.value);
-                        options = options.child(choice_button(
-                            ("connection-priority", index * 256 + choice_index),
-                            choice.label.clone(),
-                            format!("Bluetooth connection quality: {}", choice.label),
-                            ControlAction::Audio(entry.kind, change),
+                        let label = if choice.value == PriorityMode::SOUND_QUALITY {
+                            language.text("Sound quality", "音质优先").to_owned()
+                        } else if choice.value == PriorityMode::CONNECTION_QUALITY {
+                            language
+                                .text("Stable connection", "稳定连接优先")
+                                .to_owned()
+                        } else {
+                            choice.label
+                        };
+                        choices = choices.child(control_button(
+                            ("connection-quality", index * 256 + slot),
+                            label,
                             editable && choice.selectable && audio_change_ready(entry, change),
                             *priority == choice.value,
-                            cx,
+                            ControlAction::Audio(entry.kind, change),
+                            self.session.clone(),
                         ));
                     }
+                    section = section.child(choices).child(note(
+                        if is_classic_priority(*priority) {
+                            language.text(
+                                "Your headset may ask for confirmation or reconnect.",
+                                "耳机可能要求确认或重新连接。",
+                            )
+                        } else {
+                            language.text(
+                                "Quality controls are available in Classic Audio mode.",
+                                "连接质量选项仅在经典音频模式下可用。",
+                            )
+                        },
+                        cx,
+                    ));
                 }
                 _ => {
-                    section = section.child(note("Audio-control values have not been read yet."));
+                    section = section.child(note(
+                        language.text("Waiting for headset values…", "正在读取耳机状态…"),
+                        cx,
+                    ))
                 }
             }
-            cards = cards.child(section.child(options));
+            cards = cards.child(section);
         }
+        cards
+    }
+
+    pub(super) fn render_speak_controls(&self, cx: &mut Context<Self>) -> Div {
+        let language = self.language(cx);
+        let state = self.session.read(cx);
+        let (snapshot, busy, blocked) = (
+            state.snapshot.clone(),
+            state.busy,
+            state.settings_blocked() || state.preview,
+        );
+        let mut cards = div().flex().flex_col().gap_4();
+        let Some(snapshot) = snapshot else {
+            return cards;
+        };
+        let ready = snapshot.connection == ConnectionState::Ready;
+        let editable = ready && !blocked;
         for (index, entry) in snapshot.system.iter().enumerate() {
             if !matches!(
                 entry.kind,
@@ -95,183 +183,186 @@ impl Desktop {
             ) {
                 continue;
             }
-            let mut section = card("Speak-to-Chat").child(availability(
+            let kind = entry.kind;
+            let mut section = card("Speak-to-Chat", cx).child(availability(
                 ready,
-                self.busy,
+                busy,
                 entry.freshness,
                 entry.status.is_some_and(|status| status.enabled),
+                language,
+                cx,
             ));
             if let Some(parameters) = entry
                 .parameters
-                .filter(|parameters| parameters.kind() == entry.kind)
+                .filter(|parameters| parameters.kind() == kind)
                 && let Some(preview) = parameters.preview()
             {
-                let mut switches = div().flex().flex_wrap().gap_2();
-                for (value, label) in [(true, "On"), (false, "Off")] {
-                    let change = SystemChange::Enabled(value);
-                    switches = switches.child(choice_button(
-                        ("speak-enabled", index * 2 + usize::from(value)),
-                        label,
-                        format!("Speak-to-Chat {label}"),
-                        ControlAction::System(entry.kind, change),
-                        editable && system_change_ready(entry, change),
-                        parameters.enabled() == value,
-                        cx,
-                    ));
+                let change = SystemChange::Enabled(!parameters.enabled());
+                let enabled = editable && system_change_ready(entry, change);
+                let session = self.session.clone();
+                let label = language.text("Speak-to-Chat", "智能免摘对话");
+                section = section.child(
+                    Switch::new(("speak-enabled", index))
+                        .label(label)
+                        .checked(parameters.enabled())
+                        .disabled(!enabled)
+                        .on_change(move |value, _, cx| {
+                            session.update(cx, |session, cx| {
+                                session.submit_control(
+                                    ControlAction::System(kind, SystemChange::Enabled(*value)),
+                                    label.into(),
+                                );
+                                cx.notify();
+                            })
+                        }),
+                );
+                if self.compact {
+                    cards = cards.child(section);
+                    continue;
                 }
-                section = section.child(switches);
                 let preview_supported = entry
                     .capability
                     .as_ref()
                     .and_then(|capability| capability.speak_to_chat())
                     .is_some_and(|capability| capability.preview_supported);
                 if !preview_supported && preview {
-                    section = section.child(note("Stop preview before changing Speak-to-Chat."));
-                }
-                if preview_supported || preview {
-                    let change = SystemChange::Preview(!preview);
-                    let label = if preview {
-                        "Stop preview"
-                    } else {
-                        "Start preview"
-                    };
-                    section = section.child(choice_button(
-                        ("speak-preview", index),
-                        label,
-                        format!("Speak-to-Chat: {label}"),
-                        ControlAction::System(entry.kind, change),
-                        editable && system_change_ready(entry, change),
-                        preview,
+                    section = section.child(note(
+                        language.text(
+                            "Stop preview before changing this setting.",
+                            "请先停止试听，再更改此设置。",
+                        ),
                         cx,
                     ));
                 }
+                if preview_supported || preview {
+                    let change = SystemChange::Preview(!preview);
+                    section = section.child(control_button(
+                        ("speak-preview", index),
+                        if preview {
+                            language.text("Stop preview", "停止试听")
+                        } else {
+                            language.text("Preview", "试听")
+                        },
+                        editable && system_change_ready(entry, change),
+                        preview,
+                        ControlAction::System(kind, change),
+                        self.session.clone(),
+                    ));
+                }
             } else {
-                section = section.child(note("Speak-to-Chat switches have not been read yet."));
+                section = section.child(note(
+                    language.text("Waiting for headset values…", "正在读取耳机状态…"),
+                    cx,
+                ));
             }
-            // The live talking effect is not the configured on/off switch.
-            section = section.child(note(match entry.status.and_then(|status| status.talking) {
+            if self.compact {
+                cards = cards.child(section);
+                continue;
+            }
+            let talking = match entry.status.and_then(|status| status.talking) {
                 Some(true) if ready && entry.freshness == Freshness::Current => {
-                    "Talking effect: active."
+                    language.text("Conversation effect is active", "对话效果正在生效")
                 }
                 Some(false) if ready && entry.freshness == Freshness::Current => {
-                    "Talking effect: inactive."
+                    language.text("Conversation effect is inactive", "对话效果未生效")
                 }
-                Some(true) => "Last reported talking effect: active; state needs to be refreshed.",
-                Some(false) => {
-                    "Last reported talking effect: inactive; state needs to be refreshed."
-                }
-                None => "Talking effect has not been read yet.",
-            }));
-            section = section
-                .child(div().child("Detection settings"))
-                .child(availability(
-                    ready,
-                    self.busy,
-                    entry.extended_freshness,
-                    entry.status.is_some_and(|status| status.enabled),
-                ));
+                _ => language.text(
+                    "Conversation effect status is unavailable",
+                    "对话效果状态暂不可用",
+                ),
+            };
+            section = section.child(note(talking, cx));
             let Some(settings) = entry
                 .extended
-                .filter(|settings| settings.kind() == entry.kind)
+                .filter(|settings| settings.kind() == kind)
                 .and_then(SpeakPresentation::from_settings)
             else {
-                cards =
-                    cards.child(section.child(note("Detection settings have not been read yet.")));
+                cards = cards.child(section.child(note(
+                    language.text(
+                        "Detection settings have not been read yet.",
+                        "尚未读取检测设置。",
+                    ),
+                    cx,
+                )));
                 continue;
             };
+            section = section.child(availability(
+                ready,
+                busy,
+                entry.extended_freshness,
+                entry.status.is_some_and(|status| status.enabled),
+                language,
+                cx,
+            ));
             let mut sensitivity = div()
                 .flex()
                 .flex_wrap()
                 .items_center()
                 .gap_2()
-                .child("Sensitivity:");
-            for (choice_index, (value, label)) in [
-                (DetectionSensitivity::Auto, "Auto"),
-                (DetectionSensitivity::High, "High"),
-                (DetectionSensitivity::Low, "Low"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
+                .child(language.text("Sensitivity", "灵敏度"));
+            for (slot, value, label) in [
+                (0, DetectionSensitivity::Auto, language.text("Auto", "自动")),
+                (1, DetectionSensitivity::High, language.text("High", "高")),
+                (2, DetectionSensitivity::Low, language.text("Low", "低")),
+            ] {
                 let change = SystemChange::Sensitivity(value);
-                sensitivity = sensitivity.child(choice_button(
-                    ("speak-sensitivity", index * 3 + choice_index),
+                sensitivity = sensitivity.child(control_button(
+                    ("speak-sensitivity", index * 3 + slot),
                     label,
-                    format!("Speak-to-Chat sensitivity: {label}"),
-                    ControlAction::System(entry.kind, change),
                     editable && system_change_ready(entry, change),
                     settings.sensitivity == value,
-                    cx,
+                    ControlAction::System(kind, change),
+                    self.session.clone(),
                 ));
             }
             section = section.child(sensitivity);
             if let Some(voice_focus) = settings.voice_focus {
-                let change = SystemChange::VoiceFocus(!voice_focus);
-                let label = if voice_focus {
-                    "Voice focus on"
-                } else {
-                    "Voice focus off"
-                };
-                section = section.child(choice_button(
-                    ("speak-voice-focus", index),
-                    label,
-                    format!(
-                        "Speak-to-Chat voice focus {}",
-                        if voice_focus { "off" } else { "on" }
-                    ),
-                    ControlAction::System(entry.kind, change),
-                    editable && system_change_ready(entry, change),
-                    voice_focus,
-                    cx,
-                ));
+                let enabled =
+                    editable && system_change_ready(entry, SystemChange::VoiceFocus(!voice_focus));
+                let session = self.session.clone();
+                let label = language.text("Voice focus", "语音聚焦");
+                section = section.child(
+                    Switch::new(("speak-voice", index))
+                        .label(label)
+                        .checked(voice_focus)
+                        .disabled(!enabled)
+                        .on_change(move |value, _, cx| {
+                            session.update(cx, |session, cx| {
+                                session.submit_control(
+                                    ControlAction::System(kind, SystemChange::VoiceFocus(*value)),
+                                    label.into(),
+                                );
+                                cx.notify();
+                            })
+                        }),
+                );
             }
-            let mut mode_out = div()
+            let mut end = div()
                 .flex()
                 .flex_wrap()
                 .items_center()
                 .gap_2()
-                .child("Automatic end:");
-            for (choice_index, (value, label)) in [
-                (ModeOutTime::Fast, "Fast"),
-                (ModeOutTime::Mid, "Medium"),
-                (ModeOutTime::Slow, "Slow"),
-                (ModeOutTime::None, "No automatic end"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
+                .child(language.text("Automatic end", "自动结束"));
+            for (slot, value, label) in [
+                (0, ModeOutTime::Fast, language.text("Fast", "短")),
+                (1, ModeOutTime::Mid, language.text("Medium", "中")),
+                (2, ModeOutTime::Slow, language.text("Slow", "长")),
+                (3, ModeOutTime::None, language.text("Never", "不自动结束")),
+            ] {
                 let change = SystemChange::ModeOut(value);
-                mode_out = mode_out.child(choice_button(
-                    ("speak-end", index * 4 + choice_index),
+                end = end.child(control_button(
+                    ("speak-end", index * 4 + slot),
                     label,
-                    format!("Speak-to-Chat automatic end: {label}"),
-                    ControlAction::System(entry.kind, change),
                     editable && system_change_ready(entry, change),
                     settings.mode_out == value,
-                    cx,
+                    ControlAction::System(kind, change),
+                    self.session.clone(),
                 ));
             }
-            cards = cards.child(section.child(mode_out));
+            cards = cards.child(section.child(end));
         }
         cards
     }
-}
-
-fn choice_button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    operation_label: String,
-    action: ControlAction,
-    enabled: bool,
-    selected: bool,
-    cx: &mut Context<Desktop>,
-) -> Stateful<Div> {
-    action_button(id, label, enabled, selected).on_click(cx.listener(move |view, _, _, cx| {
-        if enabled {
-            view.submit_control(action, operation_label.clone());
-            cx.notify();
-        }
-    }))
 }
 
 fn priority_label(value: PriorityMode) -> String {

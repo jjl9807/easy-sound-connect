@@ -2,11 +2,12 @@
 
 use app::device_prompts::PromptPresentation;
 use ezsc_core::{ConnectionState, PromptId, PromptReply};
-use gpui::{Context, Div, MouseButton, Window, div, prelude::*, px, rgb, rgba};
+use gpui::{Context, Div, MouseButton, Window, div, prelude::*, px, rgba};
 
-use crate::{Desktop, Event, button};
+use crate::{Desktop, Event, Session, button, preferences::Language};
+use gpui_kit::component::{ActiveTheme, Disableable};
 
-impl Desktop {
+impl Session {
     pub(super) fn settings_blocked(&self) -> bool {
         self.busy
             || self.replying_to.is_some()
@@ -37,10 +38,19 @@ impl Desktop {
         }
         self.replying_to = Some(id);
         self.prompt_error = None;
+        let language = self.preferences.language;
         self.message = match reply {
-            PromptReply::Accept => "Sending your confirmation to the headset…",
-            PromptReply::Reject => "Sending your cancellation to the headset…",
-            PromptReply::Dismiss => "Closing the device message…",
+            PromptReply::Accept => language.text(
+                "Sending your confirmation to the headset…",
+                "正在向耳机发送确认…",
+            ),
+            PromptReply::Reject => language.text(
+                "Sending your cancellation to the headset…",
+                "正在向耳机发送取消请求…",
+            ),
+            PromptReply::Dismiss => {
+                language.text("Closing the device message…", "正在关闭耳机消息…")
+            }
         }
         .into();
         let sender = self.events.clone();
@@ -53,43 +63,52 @@ impl Desktop {
             let _ = sender.send(Event::PromptResponse(epoch, id, result)).await;
         });
     }
+}
 
+impl Desktop {
     pub(super) fn render_device_prompt(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::Stateful<Div>> {
-        let prompt = self
+        let language = self.language(cx);
+        let state = self.session.read(cx);
+        let waiting_id = state.replying_to;
+        let prompt_error = state.prompt_error.clone();
+        let prompt = state
             .snapshot
             .as_ref()
-            .filter(|s| s.connection == ConnectionState::Ready)?
-            .pending_prompt
-            .clone()?;
-        let presentation = PromptPresentation::from_prompt(&prompt);
-        if self.prompt_seen != Some(prompt.id) || !self.prompt_focus.contains_focused(window, cx) {
-            if self.prompt_seen != Some(prompt.id) {
-                self.prompt_error = None;
+            .filter(|s| s.connection == ConnectionState::Ready)
+            .and_then(|snapshot| snapshot.pending_prompt.clone());
+        let Some(prompt) = prompt else {
+            if self.prompt_seen.take().is_some() {
+                window.focus(&self.focus, cx);
             }
+            return None;
+        };
+        let presentation =
+            PromptPresentation::from_prompt_localized(&prompt, language == Language::Chinese);
+        if self.prompt_seen != Some(prompt.id) || !self.prompt_focus.contains_focused(window, cx) {
             self.prompt_seen = Some(prompt.id);
             window.focus(&self.prompt_focus, cx);
         }
-        let waiting = self.replying_to == Some(prompt.id);
+        let waiting = waiting_id == Some(prompt.id);
         let id = prompt.id;
         let mut content = div().flex().flex_col().gap_3().child(presentation.body);
-        if let Some((error_id, error)) = &self.prompt_error
+        if let Some((error_id, _)) = &prompt_error
             && *error_id == id
         {
             content = content.child(
                 div()
-                    .text_color(rgb(0xffb7b7))
-                    .child(format!("Could not complete your decision: {error}")),
+                    .text_color(cx.theme().danger)
+                    .child(language.text("The result could not be confirmed. Check the connection and the headset's current settings.", "未能确认操作结果。请检查连接和耳机的当前设置。")),
             );
         }
         if !presentation.affected_functions.is_empty() {
             content = content.child(
                 div()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("Affected functions"),
+                    .child(language.text("Affected functions", "受影响的功能")),
             );
             for item in &presentation.affected_functions {
                 content = content.child(format!("• {item}"));
@@ -107,12 +126,15 @@ impl Desktop {
                 button(("device-prompt-action", index), action.label)
                     .track_focus(&focus)
                     .border_1()
-                    .border_color(rgb(0x50505c))
-                    .focus(|style| style.border_color(rgb(0xa5b9ff)).bg(rgb(0x494963)))
-                    .when(waiting, |button| button.opacity(0.5).cursor_default())
+                    .border_color(cx.theme().border)
+                    .disabled(waiting)
                     .on_click(cx.listener(move |view, _, window, cx| {
                         window.focus(&focus, cx);
-                        view.respond_prompt(id, action.reply);
+                        view.session.update(cx, |session, cx| {
+                            session.respond_prompt(id, action.reply);
+                            cx.notify();
+                        });
+                        cx.stop_propagation();
                         cx.notify();
                     })),
             );
@@ -131,11 +153,18 @@ impl Desktop {
                 .p_4()
                 .bg(rgba(0x000000b8))
                 .occlude()
+                .role(gpui::accesskit::Role::Dialog)
+                .aria_label(presentation.title)
                 .track_focus(&self.prompt_focus)
                 .on_key_down(
                     cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
                         match event.keystroke.key.as_str() {
                             "tab" => {
+                                if waiting {
+                                    window.focus(&view.prompt_focus, cx);
+                                    cx.stop_propagation();
+                                    return;
+                                }
                                 let count = keyboard.actions.len();
                                 let current = view.prompt_action_focus[..count]
                                     .iter()
@@ -148,31 +177,26 @@ impl Desktop {
                                 };
                                 window.focus(&view.prompt_action_focus[next], cx);
                             }
-                            "escape" => {
+                            "escape" if !event.keystroke.modifiers.modified() => {
                                 if let Some(reply) = keyboard.escape_reply() {
-                                    view.respond_prompt(id, reply);
+                                    view.session.update(cx, |session, cx| {
+                                        session.respond_prompt(id, reply);
+                                        cx.notify();
+                                    });
                                 }
                             }
-                            "enter" | "space" => {
-                                // There is no default affirmative action. Keyboard activation
-                                // requires deliberately focusing a particular action first.
-                                if let Some(index) = view.prompt_action_focus
-                                    [..keyboard.actions.len()]
-                                    .iter()
-                                    .position(|handle| handle.is_focused(window))
-                                {
-                                    view.respond_prompt(id, keyboard.actions[index].reply);
-                                }
-                            }
+                            // Kit buttons dispatch one click on Enter/Space release only
+                            // while explicitly focused. The container has no default action.
                             _ => {}
                         }
                         cx.stop_propagation();
                         cx.notify();
                     }),
                 )
+                .on_key_up(|_, _, cx| cx.stop_propagation())
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .child(
                     div()
                         .w_full()
@@ -184,9 +208,9 @@ impl Desktop {
                         .gap_4()
                         .p_5()
                         .rounded_lg()
-                        .bg(rgb(0x292930))
+                        .bg(cx.theme().popover)
                         .border_1()
-                        .border_color(rgb(0x50505c))
+                        .border_color(cx.theme().border)
                         .shadow_lg()
                         .child(
                             div()
@@ -204,9 +228,9 @@ impl Desktop {
                         )
                         .when(waiting, |panel| {
                             panel.child(
-                                div()
-                                    .text_color(rgb(0xc8c8f3))
-                                    .child("Waiting for the headset…"),
+                                div().text_color(cx.theme().muted_foreground).child(
+                                    language.text("Waiting for the headset…", "正在等待耳机…"),
+                                ),
                             )
                         })
                         .child(actions),

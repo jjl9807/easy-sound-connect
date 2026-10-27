@@ -13,6 +13,7 @@ use libmdr2::{
     equalizer::{EqualizerKind, EqualizerSetting, PresetId},
     frame::{DataType, Decoder, Frame, Sequence},
     noise::NoiseKind,
+    types::DisplayLanguage,
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -1211,6 +1212,184 @@ fn eq_reads(inquiry: u8, capability: &[u8], parameters: &[u8]) -> [Exchange; 3] 
         Exchange::new(&[0x52, inquiry], &status),
         Exchange::new(&[0x56, inquiry], &parameters),
     ]
+}
+
+#[tokio::test(start_paused = true)]
+async fn display_language_refreshes_loaded_labels_without_changing_settings_or_identity() {
+    let backend = Arc::new(TestBackend::default());
+    let mut script = handshake(&[0x53, 0x55], false);
+    let english = b"\x02\x0d\x02\x01\xa0\x06Custom";
+    script.extend(eq_reads(3, english, &[0xa0, 2, 2, 4, 9]));
+    let capability = [&[0x51, 3][..], english].concat();
+    let bands = [0x5b, 3, 2, 1, 0, 31, 1, 0x27, 0x10];
+    script.extend([
+        Exchange::new(&[0x50, 3, 1], &capability),
+        Exchange::new(&[0x5a, 3], &bands),
+        Exchange::new(
+            &[0x50, 3, 0x0c],
+            &[&[0x51, 3, 2, 13, 2, 1, 0xa0, 9][..], "自定义".as_bytes()].concat(),
+        ),
+        Exchange::new(&[0x5a, 3], &bands),
+    ]);
+    let (peer, trace) = peer(backend.insert("a"), script);
+    let manager = DeviceManager::new(backend);
+    let handle = connect(&manager, "a").await;
+    handle.initialize().await.unwrap();
+    handle
+        .refresh_equalizer(EqualizerKind::PresetWithUlt)
+        .await
+        .unwrap();
+    handle
+        .refresh_equalizer_band_info(EqualizerKind::PresetWithUlt)
+        .await
+        .unwrap();
+    let before = handle.snapshot();
+    let start = trace.lock().unwrap().len();
+    assert_eq!(
+        handle
+            .set_display_language(DisplayLanguage::SIMPLIFIED_CHINESE)
+            .await
+            .unwrap(),
+        OperationResult::Synchronized
+    );
+    let after = handle.snapshot();
+    assert_eq!(after.language, DisplayLanguage::SIMPLIFIED_CHINESE);
+    assert_eq!(after.generation, before.generation);
+    assert_eq!(after.device, before.device);
+    assert_eq!(after.connection, ConnectionState::Ready);
+    for (old, new) in before.equalizers.iter().zip(&after.equalizers) {
+        assert_eq!(new.parameters, old.parameters);
+        assert_eq!(new.status, old.status);
+        assert_eq!(new.freshness, old.freshness);
+        assert_eq!(new.band_info, old.band_info);
+    }
+    assert_eq!(
+        after.equalizers[0].capability.as_ref().unwrap().presets()[0].id,
+        PresetId::CUSTOM
+    );
+    assert_eq!(
+        after.equalizers[0].capability.as_ref().unwrap().presets()[0]
+            .name_utf8()
+            .unwrap(),
+        "自定义"
+    );
+    assert!(
+        after.equalizers[1].capability.is_none(),
+        "language selection does not opt into an unloaded layout"
+    );
+    assert_eq!(
+        &trace.lock().unwrap()[start..],
+        &[vec![0x50, 3, 0x0c], vec![0x5a, 3]]
+    );
+    handle.close().await.unwrap();
+    peer.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn display_language_waits_for_prior_operations_and_changes_subsequent_queries() {
+    let backend = Arc::new(TestBackend::default());
+    let mut script = handshake(&[0x55], false);
+    script.extend(eq_reads(0x31, &[2, 13], &[2, 4, 9]));
+    script.extend([
+        Exchange::new(&[0x50, 0x31, 0x0c], &[0x51, 0x31, 2, 13]),
+        Exchange::new(&[0x50, 0x31, 0x0c], &[0x51, 0x31, 2, 13]),
+        Exchange::new(&[0x52, 0x31], &[0x53, 0x31, 0]),
+        Exchange::new(&[0x56, 0x31], &[0x57, 0x31, 2, 4, 9]),
+    ]);
+    let (peer, trace) = peer(backend.insert("a"), script);
+    let manager = DeviceManager::new(backend);
+    let handle = connect(&manager, "a").await;
+    handle.initialize().await.unwrap();
+    let start = trace.lock().unwrap().len();
+    let (refresh, language) = tokio::join!(biased;
+        handle.refresh_equalizer(EqualizerKind::Custom),
+        handle.set_display_language(DisplayLanguage::SIMPLIFIED_CHINESE),
+    );
+    assert_eq!(refresh.unwrap(), OperationResult::Synchronized);
+    assert_eq!(language.unwrap(), OperationResult::Synchronized);
+    handle
+        .refresh_equalizer(EqualizerKind::Custom)
+        .await
+        .unwrap();
+    assert_eq!(
+        &trace.lock().unwrap()[start..],
+        &[
+            vec![0x50, 0x31, 1],
+            vec![0x52, 0x31],
+            vec![0x56, 0x31],
+            vec![0x50, 0x31, 0x0c],
+            vec![0x50, 0x31, 0x0c],
+            vec![0x52, 0x31],
+            vec![0x56, 0x31],
+        ]
+    );
+    handle.close().await.unwrap();
+    peer.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn display_language_without_loaded_capabilities_requires_no_device_messages() {
+    let backend = Arc::new(TestBackend::default());
+    let (peer, trace) = peer(backend.insert("a"), handshake(&[0x50], false));
+    let manager = DeviceManager::new(backend);
+    let handle = connect(&manager, "a").await;
+    assert_eq!(
+        handle
+            .set_display_language(DisplayLanguage::SIMPLIFIED_CHINESE)
+            .await,
+        Err(Error::NotReady)
+    );
+    assert_eq!(handle.snapshot().language, DisplayLanguage::ENGLISH);
+    handle.initialize().await.unwrap();
+    let start = trace.lock().unwrap().len();
+    handle
+        .set_display_language(DisplayLanguage::SIMPLIFIED_CHINESE)
+        .await
+        .unwrap();
+    assert_eq!(trace.lock().unwrap().len(), start);
+    assert_eq!(
+        handle.snapshot().language,
+        DisplayLanguage::SIMPLIFIED_CHINESE
+    );
+    handle.close().await.unwrap();
+    peer.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn display_language_query_timeout_uses_normal_session_invalidation() {
+    let backend = Arc::new(TestBackend::default());
+    let mut script = handshake(&[0x55], false);
+    script.extend(eq_reads(0x31, &[2, 13], &[2, 4, 9]));
+    script.push(Exchange::ack(&[0x50, 0x31, 0x0c]));
+    let (peer, trace) = peer(backend.insert("a"), script);
+    let manager = DeviceManager::new(backend);
+    let handle = connect(&manager, "a").await;
+    handle.initialize().await.unwrap();
+    handle
+        .refresh_equalizer(EqualizerKind::Custom)
+        .await
+        .unwrap();
+    let parameters = handle.snapshot().equalizers[0].parameters.clone();
+    assert_eq!(
+        handle
+            .set_display_language(DisplayLanguage::SIMPLIFIED_CHINESE)
+            .await,
+        Err(Error::Timeout(TimeoutStage::Response))
+    );
+    handle.close().await.unwrap();
+    peer.await.unwrap();
+    let snapshot = handle.snapshot();
+    assert_eq!(snapshot.language, DisplayLanguage::SIMPLIFIED_CHINESE);
+    assert_eq!(snapshot.connection, ConnectionState::Failed);
+    assert_eq!(snapshot.equalizers[0].freshness, Freshness::Stale);
+    assert_eq!(snapshot.equalizers[0].parameters, parameters);
+    assert!(
+        trace
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|request| request[0] != 0x58)
+    );
 }
 
 #[tokio::test(start_paused = true)]

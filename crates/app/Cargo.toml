@@ -7,10 +7,11 @@ default-run = "ezsc-probe"
 
 [features]
 default = []
-gui = ["dep:gpui", "dep:gpui_platform"]
+gui = ["dep:gpui-kit", "dep:serde", "dep:serde_json", "dep:directories", "dep:anyhow", "dep:sys-locale", "dep:tempfile", "dep:ksni", "dep:tray-icon", "dep:resvg", "dep:fs2", "dep:notify-rust", "dep:winreg", "dep:libmdr2", "dep:windows", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:raw-window-handle", "dep:x11rb"]
 
 [dependencies]
 bluetooth.workspace = true
+libmdr2 = { workspace = true, optional = true }
 ezsc_core.workspace = true
 tokio = { workspace = true, features = [
     "rt-multi-thread",
@@ -18,9 +19,36 @@ tokio = { workspace = true, features = [
     "sync",
     "signal",
     "time",
+    "net",
+    "io-util",
 ] }
-gpui = { workspace = true, optional = true }
-gpui_platform = { workspace = true, optional = true }
+gpui-kit = { workspace = true, optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+directories = { version = "6", optional = true }
+anyhow = { version = "1", optional = true }
+sys-locale = { version = "0.3", optional = true }
+tempfile = { version = "3", optional = true }
+resvg = { version = "0.46", default-features = false, optional = true }
+fs2 = { version = "0.4", optional = true }
+notify-rust = { version = "4.18", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.6", optional = true }
+raw-window-handle = { version = "0.6.2", optional = true }
+x11rb = { version = "0.13.2", optional = true }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+tray-icon = { version = "0.26", default-features = false, optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = { version = "0.56", optional = true }
+windows = { workspace = true, optional = true, features = ["Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { workspace = true, optional = true }
+objc2-foundation = { workspace = true, optional = true }
+objc2-app-kit = { version = "0.3.2", optional = true, features = ["NSEvent", "NSScreen"] }
 
 [[bin]]
 name = "ezsc-probe"

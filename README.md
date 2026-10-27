@@ -10,7 +10,7 @@ easy-sound-connect (ezsc) is a Rust desktop client for SONY MDR v2 headphones, w
 | [`bluetooth`](crates/bluetooth) | Native discovery, control connections and ordered byte transport |
 | [`core`](crates/core) | Per-device sessions, capability/state projection and confirmed operations |
 | `model` | Reserved for display assets and their cache |
-| `app` | Connection probe, optional control checks and GPUI desktop window |
+| `app` | Connection probe, optional control checks, GPUI interface, tray and client preferences |
 
 Only `libmdr2` is publishable. The client does not implement MDR v1 or legacy fallback. Model names do not enable features; advertised protocol capabilities select supported layouts.
 
@@ -29,11 +29,31 @@ The default `ezsc-probe` binary performs a complete handshake, reads model/firmw
 
 The explicitly requested `--exercise-controls` check temporarily changes supported noise effect, mode, ambient level, voice focus, adaptation and sensitivity fields, then selects another advertised EQ preset and changes one band in an editable curve when available. Each independent noise check restores and verifies its full saved baseline before proceeding. Device-adjusted or failed noise checks are collected only after verified restoration and produce a failing exit status before the EQ checks; an unverified restoration stops subsequent checks immediately. The probe prints saved values before writing, confirms changes by GET readback, and restores a custom slot's own curve before restoring the originally active EQ preset. Ctrl+C waits for the current check and restoration. Forced process termination or a lost device can prevent recovery.
 
+## Desktop interface
+
 ```sh
 cargo run -p app --features gui --bin easy-sound-connect
 ```
 
-The desktop window supports paired-device selection, connection progress, battery and audio-codec updates, noise/ambient controls including adaptation and sensitivity, EQ preset selection and native band steps, DSEE Auto/Off, Bluetooth connection quality and Speak-to-Chat settings. Bluetooth connection quality offers the advertised sound-quality and stable-connection choices in Classic Audio. LE Audio connection settings are not exposed; an existing LE Audio value remains visible without enabling mode changes. Controls follow advertised capabilities and current availability. Stored sensitivity can be edited independently of the adaptation switch. Changes remain pending until readback reports confirmation or device adjustment. Optional band labels can be read separately; missing metadata uses numbered bands. GPUI packages are pinned to the `gpui-pre` 0.3.7 snapshot of Zed commit `1a28cff4b409169bac058bca40dfbfeb7621d19b`. Bluetooth and protocol work run on Tokio rather than the UI thread. The complete product interface, tray integration, localization and themes are not implemented yet.
+The desktop interface uses GPUI Kit `0.8.1`, its Component controls and the matching `gpui-pre`/`gpui-pre-platform` `0.3.10` packages, with a shared custom theme. Bluetooth and protocol work run on Tokio rather than the UI thread. Navigation has seven pages:
+
+| Page | Current content |
+| --- | --- |
+| My Device | Product image, connection state, battery components, audio codec, noise/ambient controls and Speak-to-Chat |
+| Sound | Capability-driven EQ presets, curve and band steps, DSEE and Bluetooth connection quality |
+| Scenes | Availability notice; scene editing, execution and automatic triggers are not implemented |
+| Settings | Headphone information and control-connection actions; reserved for device settings |
+| Activity | Recent connection and setting results, with diagnostic copying |
+| Preferences | Client language, theme, tray visibility, close-to-tray behavior, login startup, startup visibility and notifications; accessible without a headset |
+| About | Application version, project link and dependency information |
+
+The main window integrates window controls into the interface without a separate title strip. Its transparent upper margin supports window dragging and platform double-click actions. Windows uses native window-control hit testing; macOS retains its native traffic-light buttons and positioning. Linux follows the left/right button layout supplied by the desktop settings portal, updates when that layout changes, and exposes only supported window actions; desktops without that setting use GPUI's default layout. When the window manager supplies server decorations, the application avoids duplicate controls. Page actions remain below the window controls while content scrolls. The compact tray panel has no window buttons. Closing the main window follows the configured close-to-tray behavior.
+
+The sidebar device card shows the selected headset's product image, model, control-connection status and battery summary. Its dropdown lists saved headphones and provides Add headphones and removal from the local list. Startup restores the saved list and last selection without enumerating or connecting devices. Selecting a saved headset connects directly using its platform identity and last successful transport; Add headphones enumerates system-paired devices advertising MDR v2 services. New headphones must be paired in system Bluetooth settings first. Devices are saved after successful MDR initialization, independently of optional control refreshes. Switching waits for the previous control connection to release before opening the next one. Removing a saved entry does not unpair the device. Disconnected cards show no current battery reading; connected cards share the tray menu's battery calculation.
+
+The Preferences page supports English and Simplified Chinese, with Light, Dark and System themes. The initial language follows a Chinese system locale and otherwise defaults to English. Application theme changes apply across windows, and language changes also update tray menus. Changing language also refreshes already loaded EQ display labels through the shared read-only command queue, without reconnecting or changing headphone settings. All headphone models currently use the default product image for the selected theme. Product images and tray icons from `crates/app/assets/` are embedded in the binary; device control does not require a model-resource download. The `model` resource service, additional device settings, scene automation and a local EQ curve library are not integrated yet.
+
+The desktop window supports saved-device selection, connection progress, battery and audio-codec updates, noise/ambient controls including adaptation and sensitivity, EQ preset selection and native band steps, DSEE Auto/Off, Bluetooth connection quality and Speak-to-Chat settings. Bluetooth connection quality offers the advertised sound-quality and stable-connection choices in Classic Audio. LE Audio connection settings are not exposed; an existing LE Audio value remains visible without enabling mode changes. Controls follow advertised capabilities and current availability. Stored sensitivity can be edited independently of the adaptation switch. Changes remain pending until readback reports confirmation or device adjustment. Optional band labels can be read separately; missing metadata uses numbered bands.
 
 The audio-codec indicator uses headset reports, including SBC, AAC and LDAC, when advertised. It updates from notifications and manual state refreshes; disconnected values are marked stale. An unsettled codec is shown as not determined, and unrecognized identities retain their raw code. This is separate from the Bluetooth connection-quality preference and does not select or configure a host encoder.
 
@@ -43,18 +63,44 @@ Device prompts appear in a modal dialog. Supported requests expose the device's 
 
 Pass `--diagnostics` after `--bin easy-sound-connect --` to print connection state, control values and per-generation response/notification counters to stderr. Diagnostics are opt-in and do not record raw frames. On disconnection, controls become unavailable and cached values are marked stale; release control before reconnecting. Reconnection is explicit, not automatic.
 
-On Debian/Ubuntu, the probe needs a C toolchain, `pkg-config` and `libdbus-1-dev`. The GUI also needs Fontconfig/FreeType, XKB, Wayland and X11 development libraries. A desktop session and a supported graphics driver are needed to run the window. Windows builds use the Windows SDK; macOS builds require Xcode command-line tools.
+The main window and compact tray panel observe one application-owned Core session and submit commands through the same bridge. Closing the panel does not disconnect the headset. Closing the main window keeps the application running only when close-to-tray is enabled and a tray host is available; otherwise it exits. Quit shuts down the shared connection. Disabling the tray or losing its host restores access to the main window. A second normal launch activates the existing instance. Linux uses `ksni` over D-Bus for StatusNotifierItem integration, without adding GTK/AppIndicator to the tray implementation; Windows and macOS use native tray APIs through `tray-icon`. Panel placement and tray availability depend on the desktop host.
+
+Tray icon colors follow the system tray host independently of the application theme. Windows reads the taskbar's `SystemUsesLightTheme` setting, macOS lets AppKit recolor a template image, and Linux publishes a named symbolic SVG for hosts that support symbolic recoloring. Linux also provides a neutral bitmap fallback for hosts that cannot load the symbolic icon; these hosts do not gain automatic panel-color matching from the fallback.
+
+The native tray menu contains two informational rows followed by Open main window and Quit. The first row shows `🎧` and the headset model; the second shows a battery and codec summary, such as `🔋68% | LDAC | DSEE`. Split batteries use the lowest current left/right reading and exclude the charging case; a single-battery headset uses its own reading. Levels at or below 20% use `🪫`. Missing or stale readings show `—`. The DSEE label appears when the current configured mode is Auto; it does not indicate active audio processing. The menu has no device controls or submenus. Linux hosts such as GNOME AppIndicator show this native menu on a primary click; hosts that send an activation request still open the GPUI panel. No desktop extension or setting changes are required.
+
+Client state is stored under `.ezsc` in the operating system's user home directory on all platforms. `preferences.json` contains versioned client preferences; `devices.json` contains versioned saved device identities, display names, successful transports and the last selection. Device records do not store live connection state, battery readings or sound settings. Saves replace files atomically, and malformed or unsupported files are preserved. Device-record writes run off the UI thread and pending writes are drained at shutdown. Login startup is opt-in and uses the operating system's login registration location; it registers the current executable path, so after moving the binary, disable and re-enable that preference. The login entry passes `--background`, which starts in the tray only when the startup-visibility preference and tray availability permit it. Desktop notifications report pending device confirmations and lost control connections, subject to system notification support.
+
+### Offline visual preview
+
+```sh
+cargo run -p app --features gui --bin easy-sound-connect -- --preview
+cargo run -p app --features gui --bin easy-sound-connect -- --preview --headband --zh --light --page=sound
+cargo run -p app --features gui --bin easy-sound-connect -- --preview --empty --page=preferences
+cargo run -p app --features gui --bin easy-sound-connect -- --preview --panel
+cargo run -p app --features gui --bin easy-sound-connect -- --preview --with-tray
+```
+
+Preview mode uses synthetic `Preview headset` state, disables device controls and does not start Bluetooth, modify saved preferences or change login startup. Its default layout has left/right/case batteries and ten EQ bands; `--headband` selects a single battery and five bands. These fixtures exercise layouts and do not describe or validate any real headphone model. Preview defaults to English and Dark; `--zh` selects Simplified Chinese and `--light` selects Light. Use `--empty` for the empty device list, `--device-picker` to open the device dropdown and `--panel` to open the compact panel. Preview device selection and removal use in-memory fixtures only. The `--page=` option accepts `sound`, `preferences`, `settings`, `activity`, `scenes` or `about` for the initial main page; My Device is the default. The ordinary preview skips system tray registration and the normal single-instance lock. Add `--with-tray` to exercise native tray registration, menu actions and window lifecycle while retaining synthetic device state and an isolated temporary instance directory.
+
+### Build prerequisites
+
+On Debian/Ubuntu, the probe needs a C toolchain, `pkg-config` and `libdbus-1-dev`. The GUI also needs Fontconfig/FreeType, XKB, Wayland and X11 development libraries, a graphical desktop session and a working Vulkan driver. Package names vary by distribution. Follow the [GPUI Kit installation guide](https://gpui-kit.com/docs/installation/) for upstream toolchain and platform prerequisites; its general package list also covers optional features that this application does not enable. No package-installation script is provided here.
+
+The upstream guide lists macOS 15 or later with Xcode command-line tools, and Windows 10 or later with the MSVC Rust toolchain, Visual Studio C++ build tools, a Windows SDK and CMake. These are upstream requirements, not this project's verified minimum operating-system versions. Native builds and runtime checks are still required on each target platform; a cross-compilation check does not establish GUI, tray or Bluetooth compatibility.
 
 ## Validation
 
 ```sh
 cargo fmt --all --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo check -p app --features gui
 ```
 
 Deterministic transports exercise handshake, fragmented I/O, ACK/response ordering, cancellation, stale connection isolation, noise controls and equalizer readback. Linux and Windows have RFCOMM/GATT backends; macOS currently has an RFCOMM preview using paired SDP records, with GATT explicitly unavailable. The macOS preview limits native open attempts to 16 per process to bound retained callback objects and any unfinished native write buffers; restart the app when that limit is reached. These are implementation boundaries, not full hardware compatibility claims.
+
+The hardware checks below cover the existing protocol and control flows on the stated headset/platform combination. They do not establish acceptance of the GPUI Kit migration, every new page, tray lifecycle, scaling or all language/theme combinations. Offline previews support visual review; complete reference-image comparison and cross-platform GUI acceptance remain pending.
 
 Hardware validation on WF-1000XM6 firmware 2.0.5, Debian 13.7 / BlueZ 5.82 over RFCOMM covers discovery, handshake, identity/battery reads, noise/EQ capabilities, frequency labels and clean release. GUI checks confirmed NC/ambient selection; ambient level, voice focus, adaptation and all three sensitivity choices in ambient mode; EQ preset selection; and independent edits to all ten custom bands. Original settings and the edited custom curve were restored and verified. Some requests produced device-adjusted readback: disabling the effect from ambient mode also changed the reported mode, and edits to ambient-related fields in NC mode retained their previous values. These results are reported as `Adjusted` without model-specific normalization.
 

@@ -198,7 +198,11 @@ impl DeviceHandle {
         self.lifetime.0.cancel();
     }
 
-    pub(crate) fn cleanup_finished(&self) -> bool {
+    /// Whether native transport cleanup has returned, including an error result.
+    ///
+    /// A close timeout can return before this becomes true. Until then, the
+    /// manager retains the device reservation and a replacement must not open.
+    pub fn cleanup_finished(&self) -> bool {
         *self.cleanup.borrow()
     }
 
@@ -238,6 +242,16 @@ impl DeviceHandle {
     }
     pub async fn refresh_equalizer(&self, kind: EqualizerKind) -> Result<OperationResult> {
         self.submit(Operation::Equalizer(kind)).await
+    }
+    /// Selects the language for subsequent display-label queries and refreshes
+    /// already loaded equalizer capabilities and optional band metadata.
+    ///
+    /// This operation shares the ordinary command queue. It does not reconnect,
+    /// read or write EQ parameters, or select a voice-guidance language. The new
+    /// query language remains selected if a refresh fails; errors follow the
+    /// same rules as other capability queries.
+    pub async fn set_display_language(&self, language: DisplayLanguage) -> Result<OperationResult> {
+        self.submit(Operation::DisplayLanguage(language)).await
     }
     /// Explicitly reads optional band labels and associates them with a freshly
     /// queried capability. Unsupported metadata does not authorize fixed labels.
@@ -357,6 +371,7 @@ enum Operation {
     Initialize,
     Battery,
     AudioCodec,
+    DisplayLanguage(DisplayLanguage),
     Noise(NoiseKind),
     SetNoise(NoiseKind, NoiseChange),
     Equalizer(EqualizerKind),
@@ -718,6 +733,24 @@ impl Actor {
                 ]);
             }
             Operation::Battery => steps.push_back(Step::BatteryQueries),
+            Operation::DisplayLanguage(language) => {
+                self.config.language = language;
+                self.snapshot.language = language;
+                for state in &mut self.snapshot.equalizers {
+                    if state.capability.is_none() {
+                        continue;
+                    }
+                    steps.push_back(Step::Query(Request::EqualizerCapability {
+                        kind: state.kind,
+                        language,
+                    }));
+                    // Optional metadata is only retried when it was already
+                    // loaded, preserving the explicit opt-in to that query.
+                    if state.band_info.take().is_some() {
+                        steps.push_back(Step::Query(Request::EqualizerBandInfo(state.kind)));
+                    }
+                }
+            }
             Operation::AudioCodec => {
                 if self.snapshot.audio_codec.is_none() {
                     return Err(Error::Unsupported("audio codec report not advertised"));

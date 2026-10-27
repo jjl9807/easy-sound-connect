@@ -17,15 +17,7 @@ futures-util = "0.3"
 tokio = "1.53"
 tokio-util = { version = "0.7", features = ["rt"] }
 
-gpui = { package = "gpui-pre", version = "=0.3.7", default-features = false, features = [
-    "wayland",
-    "x11",
-] }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = [
-    "font-kit",
-    "wayland",
-    "x11",
-] }
+gpui-kit = "=0.8.1"
 
 bluer = { version = "0.17.4", features = ["bluetoothd", "rfcomm"] }
 windows = { version = "0.62.2", features = [
