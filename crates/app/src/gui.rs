@@ -215,6 +215,9 @@ impl Desktop {
                 if let Some(error) = &snapshot.last_error {
                     eprintln!("Connection/operation error: {error}");
                 }
+                if let Some(codec) = &snapshot.audio_codec {
+                    eprintln!("{}", app::audio_codec_line(codec));
+                }
                 for line in app::control_lines(snapshot) {
                     eprintln!("{line}");
                 }
@@ -320,7 +323,7 @@ impl Desktop {
             return;
         };
         self.busy = true;
-        self.message = "Reading battery and sound controls…".into();
+        self.message = "Reading battery, audio codec and sound controls…".into();
         let sender = self.events.clone();
         let epoch = self.epoch;
         self.runtime.spawn(async move {
@@ -329,7 +332,14 @@ impl Desktop {
                     .refresh_battery()
                     .await
                     .map_err(|error| error.to_string())?;
-                gui_controls::refresh_controls(&handle).await
+                gui_controls::refresh_controls(&handle).await?;
+                if handle.snapshot().audio_codec.is_some() {
+                    handle
+                        .refresh_audio_codec()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(())
             }
             .await
             .map(|_| "Device state is up to date.".into());

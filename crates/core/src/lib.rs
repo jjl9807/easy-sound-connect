@@ -14,7 +14,7 @@ mod runtime;
 mod state;
 
 pub use controls::{AudioChange, NoiseChange, SystemChange};
-pub use libmdr2::{alert, audio, equalizer, noise, system};
+pub use libmdr2::{alert, audio, common, equalizer, noise, system};
 pub use manager::DeviceManager;
 pub use prompts::{DevicePrompt, PromptId, PromptReply};
 pub use runtime::{DeviceHandle, OperationResult, SessionConfig};

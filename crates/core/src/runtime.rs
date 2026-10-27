@@ -12,6 +12,7 @@ use libmdr2::{
     audio::{AudioCapability, AudioKind, AudioParameters, AudioSetting, AudioStatus},
     battery::BatteryKind,
     command::{CapabilityQuery, ExpectedResponse, Notification, Request, Response},
+    common::{AudioCodec, CommonKind, CommonStatus},
     device::{DeviceInfo, DeviceInfoKind},
     equalizer::{EqualizerKind, EqualizerSetting, PresetId},
     frame::{Decoder, Frame},
@@ -201,7 +202,7 @@ impl DeviceHandle {
         *self.cleanup.borrow()
     }
 
-    /// Performs a complete standard/app-type handshake and initial battery sync.
+    /// Performs a complete handshake and initial advertised battery/codec sync.
     pub async fn initialize(&self) -> Result<OperationResult> {
         self.submit(Operation::Initialize).await
     }
@@ -224,6 +225,10 @@ impl DeviceHandle {
 
     pub async fn refresh_battery(&self) -> Result<OperationResult> {
         self.submit(Operation::Battery).await
+    }
+    /// Reads the current device-reported codec when its function is advertised.
+    pub async fn refresh_audio_codec(&self) -> Result<OperationResult> {
+        self.submit(Operation::AudioCodec).await
     }
     pub async fn refresh_noise(&self, kind: NoiseKind) -> Result<OperationResult> {
         self.submit(Operation::Noise(kind)).await
@@ -351,6 +356,7 @@ enum Operation {
     RespondPrompt(PromptId, PromptReply),
     Initialize,
     Battery,
+    AudioCodec,
     Noise(NoiseKind),
     SetNoise(NoiseKind, NoiseChange),
     Equalizer(EqualizerKind),
@@ -403,6 +409,7 @@ enum Step {
     Query(Request),
     FunctionLists,
     BatteryQueries,
+    AudioCodecQuery,
     Send(Vec<u8>),
     BuildNoise(NoiseKind, NoiseChange),
     VerifyNoise(NoiseKind, NoiseParameters),
@@ -706,10 +713,17 @@ impl Actor {
                     Step::Query(Request::DeviceInfo(DeviceInfoKind::ModelName)),
                     Step::Query(Request::DeviceInfo(DeviceInfoKind::FirmwareVersion)),
                     Step::BatteryQueries,
+                    Step::AudioCodecQuery,
                     Step::EnableAlerts,
                 ]);
             }
             Operation::Battery => steps.push_back(Step::BatteryQueries),
+            Operation::AudioCodec => {
+                if self.snapshot.audio_codec.is_none() {
+                    return Err(Error::Unsupported("audio codec report not advertised"));
+                }
+                steps.push_back(Step::AudioCodecQuery);
+            }
             Operation::Noise(kind) | Operation::SetNoise(kind, _) => {
                 if !self.snapshot.noise.iter().any(|state| state.kind == kind) {
                     return Err(Error::Unsupported("noise layout not advertised"));
@@ -1106,6 +1120,11 @@ impl Actor {
                 }
                 self.prepend(steps);
             }
+            Step::AudioCodecQuery => {
+                if self.snapshot.audio_codec.is_some() {
+                    self.prepend([Step::Query(Request::CommonStatus(CommonKind::AudioCodec))]);
+                }
+            }
             Step::BatteryQueries => {
                 if self
                     .active
@@ -1461,6 +1480,9 @@ impl Actor {
             steps.push(Step::Query(Request::SystemParameters(state.kind)));
             steps.push(Step::Query(Request::SystemExtendedParameters(state.kind)));
         }
+        if self.snapshot.audio_codec.is_some() {
+            steps.push(Step::Query(Request::CommonStatus(CommonKind::AudioCodec)));
+        }
         steps
     }
 
@@ -1609,6 +1631,7 @@ impl Actor {
                 self.snapshot.firmware_version = Some(version)
             }
             Response::BatteryStatus(status) => self.snapshot.battery(status),
+            Response::CommonStatus(CommonStatus::AudioCodec(codec)) => self.audio_codec(codec),
             Response::NoiseCapability(capability) => {
                 if let Some(state) = self
                     .snapshot
@@ -1691,6 +1714,7 @@ impl Actor {
         match notification {
             Notification::AlertMessage(message) => self.receive_prompt(message),
             Notification::BatteryStatus(status) => self.snapshot.battery(status),
+            Notification::CommonStatus(CommonStatus::AudioCodec(codec)) => self.audio_codec(codec),
             Notification::NoiseStatus(status) => self.noise_status(status),
             Notification::NoiseParameters(parameters) => {
                 self.snapshot
@@ -1749,6 +1773,12 @@ impl Actor {
                 self.snapshot.unhandled_messages =
                     self.snapshot.unhandled_messages.saturating_add(1)
             }
+        }
+    }
+    fn audio_codec(&mut self, codec: AudioCodec) {
+        if let Some(state) = &mut self.snapshot.audio_codec {
+            state.codec = Some(codec);
+            state.freshness = Freshness::Current;
         }
     }
     fn noise_status(&mut self, status: libmdr2::noise::NoiseStatus) {

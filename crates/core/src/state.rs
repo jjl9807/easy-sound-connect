@@ -5,6 +5,7 @@ use libmdr2::{
     audio::{AudioCapability, AudioKind, AudioParameters, AudioStatus},
     battery::{BatteryKind, BatteryReading, BatteryReadings, BatteryStatus},
     command::{CapabilityInfo, ProtocolInfo, SupportedFunction},
+    common::{AudioCodec, CommonKind},
     device::DeviceText,
     equalizer::{
         EqualizerBandInfo, EqualizerCapability, EqualizerKind, EqualizerParameters, EqualizerStatus,
@@ -85,6 +86,14 @@ pub struct AudioState {
     pub freshness: Freshness,
 }
 
+/// The current codec reported by the device, independently of audio preferences.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioCodecState {
+    /// `None` has not been read; `Some(AudioCodec::UNSETTLED)` is a device report.
+    pub codec: Option<AudioCodec>,
+    pub freshness: Freshness,
+}
+
 /// Speak-to-Chat ordinary and extended parameters have independent freshness.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SystemState {
@@ -128,6 +137,8 @@ pub struct DeviceSnapshot {
     pub noise: Vec<NoiseState>,
     pub equalizers: Vec<EqualizerState>,
     pub audio: Vec<AudioState>,
+    /// Present only when the device advertises the table-1 codec report.
+    pub audio_codec: Option<AudioCodecState>,
     pub system: Vec<SystemState>,
     pub pending_prompt: Option<crate::DevicePrompt>,
     pub last_error: Option<Error>,
@@ -157,6 +168,7 @@ impl DeviceSnapshot {
             noise: Vec::new(),
             equalizers: Vec::new(),
             audio: Vec::new(),
+            audio_codec: None,
             system: Vec::new(),
             pending_prompt: None,
             last_error: None,
@@ -171,18 +183,26 @@ impl DeviceSnapshot {
         let eq = EqualizerKind::from_function(advertised.id);
         let audio = AudioKind::from_function(advertised.id).filter(|kind| supports_audio(*kind));
         let system = SystemKind::from_function(advertised.id).filter(|kind| supports_system(*kind));
+        let codec = CommonKind::from_function(advertised.id) == Some(CommonKind::AudioCodec);
         self.functions.push(FunctionSupport {
             readable: battery.is_some()
                 || noise.is_some()
                 || eq.is_some()
                 || audio.is_some()
-                || system.is_some(),
+                || system.is_some()
+                || codec,
             writable: noise.is_some_and(|kind| kind != NoiseKind::ButtonCycle)
                 || eq.is_some()
                 || audio.is_some()
                 || system.is_some(),
             advertised,
         });
+        if codec && self.audio_codec.is_none() {
+            self.audio_codec = Some(AudioCodecState {
+                codec: None,
+                freshness: Freshness::Unknown,
+            });
+        }
         if let Some(kind) = battery {
             let components: &[BatteryComponent] = match kind {
                 BatteryKind::Single | BatteryKind::SingleWithThreshold => {
@@ -289,6 +309,11 @@ impl DeviceSnapshot {
     }
 
     pub(crate) fn stale(&mut self) {
+        if let Some(state) = &mut self.audio_codec
+            && state.codec.is_some()
+        {
+            state.freshness = Freshness::Stale;
+        }
         for entry in &mut self.batteries {
             if entry.reading.is_some() {
                 entry.freshness = Freshness::Stale;

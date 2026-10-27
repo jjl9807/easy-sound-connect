@@ -9,6 +9,7 @@ use ezsc_core::{
     OperationResult, SessionConfig, TimeoutStage,
 };
 use libmdr2::{
+    common::AudioCodec,
     equalizer::{EqualizerKind, EqualizerSetting, PresetId},
     frame::{DataType, Decoder, Frame, Sequence},
     noise::NoiseKind,
@@ -1551,6 +1552,247 @@ async fn message_counters_separate_responses_and_notifications_before_after_and_
         }
     );
     drop(incoming);
+    handle.close().await.unwrap();
+    peer.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn codec_requires_its_table_aware_advertisement() {
+    for table_two_codec in [false, true] {
+        let backend = Arc::new(TestBackend::default());
+        let mut script = handshake(&[0x11, 0x13, 0x18], table_two_codec);
+        if table_two_codec {
+            script[3].response = Some(vec![7, 0, 1, 0x12, 0]);
+        }
+        // Even a valid unsolicited codec report cannot create an unadvertised feature.
+        script.last_mut().unwrap().notices.push(vec![0x15, 2, 0x10]);
+        let (peer, trace) = peer(backend.insert("a"), script);
+        let manager = DeviceManager::new(backend);
+        let handle = connect(&manager, "a").await;
+        handle.initialize().await.unwrap();
+        assert!(handle.snapshot().audio_codec.is_none());
+        assert!(
+            handle
+                .snapshot()
+                .functions
+                .iter()
+                .all(|f| !f.readable && !f.writable)
+        );
+        assert_eq!(
+            handle.refresh_audio_codec().await,
+            Err(Error::Unsupported("audio codec report not advertised"))
+        );
+        assert!(!trace.lock().unwrap().iter().any(|p| p == &[0x12, 2]));
+        handle.close().await.unwrap();
+        peer.await.unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn codec_initial_read_refresh_and_live_notifications_preserve_identity() {
+    let backend = Arc::new(TestBackend::default());
+    let driver = backend.insert("a");
+    let incoming = driver.incoming.clone();
+    // Duplicate advertisements still produce only one initial GET.
+    let mut script = handshake(&[0x12, 0x12], false);
+    script.extend([
+        Exchange::new(&[0x12, 2], &[0x13, 2, 0x10]),
+        Exchange::new(&[0x12, 2], &[0x13, 2, 0]),
+        Exchange::new(&[0x12, 2], &[0x13, 2, 1]).notification_after_response(&[0x15, 2, 0xa7]),
+    ]);
+    let (peer, trace) = peer(driver, script);
+    let manager = DeviceManager::new(backend);
+    let handle = connect(&manager, "a").await;
+    handle.initialize().await.unwrap();
+    let state = handle.snapshot();
+    assert!(state.functions.iter().all(|f| f.readable && !f.writable));
+    assert_eq!(
+        state.audio_codec.as_ref().unwrap().codec,
+        Some(AudioCodec::LDAC)
+    );
+    assert_eq!(state.audio_codec.unwrap().freshness, Freshness::Current);
+    assert_eq!(trace.lock().unwrap().len(), 6);
+    assert_eq!(
+        handle.refresh_audio_codec().await.unwrap(),
+        OperationResult::Synchronized
+    );
+    assert_eq!(
+        handle.snapshot().audio_codec.unwrap().codec,
+        Some(AudioCodec::UNSETTLED)
+    );
+    handle.refresh_audio_codec().await.unwrap();
+    assert_eq!(
+        handle
+            .snapshot()
+            .audio_codec
+            .unwrap()
+            .codec
+            .unwrap()
+            .as_raw(),
+        0xa7
+    );
+
+    // Nine responses/notifications above leave the peer sequence at one. A
+    // notification outside a query must publish the new codec without a GET.
+    let mut updates = handle.subscribe();
+    incoming
+        .send(
+            Frame {
+                data_type: DataType::DATA_MDR,
+                sequence: Sequence::One,
+                payload: vec![0x15, 2, 2],
+            }
+            .encode(16384)
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    while updates
+        .borrow_and_update()
+        .audio_codec
+        .as_ref()
+        .unwrap()
+        .codec
+        != Some(AudioCodec::AAC)
+    {
+        updates.changed().await.unwrap();
+    }
+    assert_eq!(handle.snapshot().message_counters.notifications, 2);
+    assert_eq!(handle.snapshot().unhandled_messages, 0);
+    assert_eq!(trace.lock().unwrap().len(), 8);
+    drop(incoming);
+    handle.close().await.unwrap();
+    assert_eq!(
+        handle.snapshot().audio_codec.unwrap().freshness,
+        Freshness::Stale
+    );
+    peer.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn codec_notification_and_ack_cannot_satisfy_a_refresh() {
+    let backend = Arc::new(TestBackend::default());
+    let mut script = handshake(&[0x12], false);
+    script.extend([
+        Exchange::new(&[0x12, 2], &[0x13, 2, 0x10]),
+        Exchange::ack(&[0x12, 2]).notice(&[0x15, 2, 2]),
+    ]);
+    let (peer, trace) = peer(backend.insert("a"), script);
+    let manager = DeviceManager::new(backend);
+    let handle = connect(&manager, "a").await;
+    handle.initialize().await.unwrap();
+    assert_eq!(
+        handle.refresh_audio_codec().await,
+        Err(Error::Timeout(TimeoutStage::Response))
+    );
+    handle.close().await.unwrap();
+    let state = handle.snapshot();
+    assert_eq!(state.connection, ConnectionState::Failed);
+    assert_eq!(
+        state.audio_codec.as_ref().unwrap().codec,
+        Some(AudioCodec::AAC)
+    );
+    assert_eq!(state.audio_codec.unwrap().freshness, Freshness::Stale);
+    assert_eq!(trace.lock().unwrap().len(), 7);
+    peer.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn malformed_codec_reads_are_isolated_and_can_be_refreshed() {
+    let backend = Arc::new(TestBackend::default());
+    let mut script = handshake(&[0x12, 0x20], false);
+    script.extend([
+        Exchange::new(&[0x22, 0], &[0x23, 0, 80, 0]),
+        Exchange::new(&[0x12, 2], &[0x13, 2]),
+        Exchange::new(&[0x12, 2], &[0x13, 2, 1]),
+        Exchange::new(&[0x12, 2], &[0x13, 2, 1, 0]),
+        Exchange::new(&[0x12, 2], &[0x13, 2, 0xff]),
+    ]);
+    let (peer, _) = peer(backend.insert("a"), script);
+    let manager = DeviceManager::new(backend);
+    let handle = connect(&manager, "a").await;
+    handle.initialize().await.unwrap();
+    let state = handle.snapshot();
+    assert_eq!(state.connection, ConnectionState::Ready);
+    assert!(matches!(state.last_error, Some(Error::Protocol(_))));
+    assert_eq!(state.audio_codec.as_ref().unwrap().codec, None);
+    assert_eq!(state.audio_codec.unwrap().freshness, Freshness::Unknown);
+    assert_eq!(state.batteries[0].reading.unwrap().level.as_u8(), 80);
+    handle.refresh_audio_codec().await.unwrap();
+    assert_eq!(
+        handle.snapshot().audio_codec.unwrap().codec,
+        Some(AudioCodec::SBC)
+    );
+    assert!(matches!(
+        handle.refresh_audio_codec().await,
+        Err(Error::Protocol(_))
+    ));
+    assert_eq!(handle.snapshot().connection, ConnectionState::Ready);
+    handle.refresh_audio_codec().await.unwrap();
+    assert_eq!(
+        handle.snapshot().audio_codec.unwrap().codec,
+        Some(AudioCodec::OTHER)
+    );
+    handle.close().await.unwrap();
+    peer.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn codec_reconnect_does_not_reuse_the_previous_generation() {
+    let backend = Arc::new(TestBackend::default());
+    let mut first = handshake(&[0x12], false);
+    first.push(Exchange::new(&[0x12, 2], &[0x13, 2, 0x10]));
+    let mut second = handshake(&[0x12], false);
+    second.push(Exchange::new(&[0x12, 2], &[0x13, 2, 1]));
+    let (first_peer, _) = peer(backend.insert("a"), first);
+    let (second_peer, _) = peer(backend.insert("a"), second);
+    let manager = DeviceManager::new(backend);
+    let old = connect(&manager, "a").await;
+    old.initialize().await.unwrap();
+    old.close().await.unwrap();
+    first_peer.await.unwrap();
+    let new = connect(&manager, "a").await;
+    assert_ne!(old.snapshot().generation, new.snapshot().generation);
+    assert!(new.snapshot().audio_codec.is_none());
+    new.initialize().await.unwrap();
+    assert_eq!(
+        new.snapshot().audio_codec.unwrap().codec,
+        Some(AudioCodec::SBC)
+    );
+    let old_state = old.snapshot().audio_codec.unwrap();
+    assert_eq!(old_state.codec, Some(AudioCodec::LDAC));
+    assert_eq!(old_state.freshness, Freshness::Stale);
+    new.close().await.unwrap();
+    second_peer.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn independent_prompt_dismissal_refreshes_advertised_codec() {
+    let backend = Arc::new(TestBackend::default());
+    let mut script = handshake(&[0x12, 0x90], false);
+    script.extend([
+        Exchange::new(&[0x12, 2], &[0x13, 2, 1]),
+        Exchange::ack(&[0x94, 0, 0]).notice(&[0x99, 0, 0xfe, 1]),
+        Exchange::new(&[0x12, 2], &[0x13, 2, 0x10]),
+    ]);
+    let (peer, trace) = peer(backend.insert("a"), script);
+    let manager = DeviceManager::new(backend);
+    let handle = connect(&manager, "a").await;
+    handle.initialize().await.unwrap();
+    let prompt = handle.snapshot().pending_prompt.unwrap();
+    assert_eq!(
+        handle
+            .respond_prompt(prompt.id, ezsc_core::PromptReply::Dismiss)
+            .await
+            .unwrap(),
+        OperationResult::Dismissed
+    );
+    assert_eq!(
+        handle.snapshot().audio_codec.unwrap().codec,
+        Some(AudioCodec::LDAC)
+    );
+    assert!(!trace.lock().unwrap().iter().any(|p| p[0] == 0x98));
+    assert_eq!(trace.lock().unwrap().len(), 8);
     handle.close().await.unwrap();
     peer.await.unwrap();
 }
