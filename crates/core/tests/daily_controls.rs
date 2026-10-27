@@ -94,6 +94,7 @@ impl Harness {
             Exchange::read(&[6, 0], &function_response),
             Exchange::read(&[4, 1], b"\x05\x01\x07Fixture"),
             Exchange::read(&[4, 2], b"\x05\x02\x031.0"),
+            Exchange::read(&[4, 3], &[5, 3, 0x01, 0x00]),
         ];
         script.extend(operations);
         let trace = Arc::new(Mutex::new(Vec::new()));
@@ -736,6 +737,6 @@ async fn only_advertised_daily_layouts_are_exposed_and_other_operations_do_not_s
             .await,
         Err(Error::Unsupported(_))
     ));
-    assert_eq!(fixture.trace.lock().unwrap().len(), 5);
+    assert_eq!(fixture.trace.lock().unwrap().len(), 6);
     fixture.finish().await;
 }

@@ -3,7 +3,6 @@ members = [
     "crates/libmdr2",
     "crates/bluetooth",
     "crates/core",
-    "crates/model",
     "crates/app",
 ]
 resolver = "3"

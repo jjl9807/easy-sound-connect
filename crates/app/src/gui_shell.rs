@@ -129,6 +129,7 @@ pub(super) fn run() {
         gpui_kit::init(cx);
         gpui_kit::component::set_locale(prefs.language.locale());
         gui_theme::apply(prefs.theme, cx);
+        crate::gui_product_images::init(handle.clone(), lifetime.clone(), preview, cx);
         let shutdown_shared = shared.clone();
         let shutdown_runtime = handle.clone();
         let shutdown_cancel = lifetime.clone();
@@ -170,6 +171,7 @@ pub(super) fn run() {
                                 .into(),
                             ),
                             model_name: None,
+                            model_color: None,
                             transport: bluetooth::TransportKind::Rfcomm.into(),
                         });
                 }

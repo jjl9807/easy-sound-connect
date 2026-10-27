@@ -713,6 +713,7 @@ impl Session {
                     id: device.0,
                     name,
                     model_name: snapshot.model_name.as_ref().and_then(|name| name.as_utf8().ok()).map(str::to_owned),
+                    model_color: snapshot.appearance.map(|appearance| appearance.color.as_raw()),
                     transport: transport.into(),
                 };
                 sender.send(Event::Initialized(epoch, saved)).await.map_err(|_| "Application closed".to_owned())?;
@@ -1017,6 +1018,7 @@ mod tests {
             id: id.into(),
             name: Some(id.into()),
             model_name: None,
+            model_color: None,
             transport: TransportKind::Rfcomm.into(),
         }
     }

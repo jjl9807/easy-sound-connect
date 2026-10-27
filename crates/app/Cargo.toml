@@ -7,7 +7,7 @@ default-run = "ezsc-probe"
 
 [features]
 default = []
-gui = ["dep:gpui-kit", "dep:serde", "dep:serde_json", "dep:directories", "dep:anyhow", "dep:sys-locale", "dep:tempfile", "dep:ksni", "dep:tray-icon", "dep:resvg", "dep:fs2", "dep:notify-rust", "dep:winreg", "dep:libmdr2", "dep:windows", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:raw-window-handle", "dep:x11rb"]
+gui = ["dep:gpui-kit", "dep:serde", "dep:serde_json", "dep:directories", "dep:anyhow", "dep:sys-locale", "dep:tempfile", "dep:ksni", "dep:tray-icon", "dep:resvg", "dep:fs2", "dep:notify-rust", "dep:winreg", "dep:libmdr2", "dep:windows", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:raw-window-handle", "dep:x11rb", "dep:reqwest", "dep:sha2", "dep:image"]
 
 [dependencies]
 bluetooth.workspace = true
@@ -32,6 +32,12 @@ tempfile = { version = "3", optional = true }
 resvg = { version = "0.46", default-features = false, optional = true }
 fs2 = { version = "0.4", optional = true }
 notify-rust = { version = "4.18", optional = true }
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"], optional = true }
+sha2 = { version = "0.10", optional = true }
+image = { version = "0.25.10", default-features = false, features = ["png", "gif", "webp", "jpeg"], optional = true }
+
+[dev-dependencies]
+png = "0.18"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = { version = "0.3.6", optional = true }

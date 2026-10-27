@@ -10,12 +10,15 @@ mod gui_device_picker;
 mod gui_device_prompts;
 mod gui_pages;
 mod gui_preview;
+mod gui_product_images;
 mod gui_session;
 mod gui_shell;
 mod gui_theme;
 mod gui_titlebar;
 mod gui_tray_menu;
 mod preferences;
+mod product_assets;
+mod product_media;
 mod saved_devices;
 
 use gpui_kit::component::{
@@ -99,11 +102,17 @@ impl Desktop {
             gui_shell::refresh_tray(cx);
             cx.notify();
         });
-        let activation = cx.observe_window_activation(window, |view, window, _| {
+        let activation = cx.observe_window_activation(window, |view, window, cx| {
             if view.compact && !window.is_window_active() {
                 window.remove_window();
+            } else if !view.compact && window.is_window_active() && view.page == Page::Device {
+                gui_product_images::restart(cx);
+                cx.notify();
             }
         });
+        if !compact {
+            gui_product_images::restart(cx);
+        }
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
@@ -123,6 +132,13 @@ impl Desktop {
     fn language(&self, cx: &App) -> Language {
         self.session.read(cx).preferences.language
     }
+    fn select_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        if !self.compact && self.page != page && page == Page::Device {
+            gui_product_images::restart(cx);
+        }
+        self.page = page;
+        cx.notify();
+    }
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .session
@@ -137,8 +153,7 @@ impl Desktop {
         if modifiers.control || modifiers.platform {
             if let Ok(index) = event.keystroke.key.parse::<usize>() {
                 if let Some(page) = index.checked_sub(1).and_then(|index| Page::ALL.get(index)) {
-                    self.page = *page;
-                    cx.notify();
+                    self.select_page(*page, cx);
                     cx.stop_propagation();
                 }
             } else if event.keystroke.key == "r" {
@@ -151,8 +166,7 @@ impl Desktop {
                     cx.notify();
                 });
             } else if event.keystroke.key == "," {
-                self.page = Page::Preferences;
-                cx.notify();
+                self.select_page(Page::Preferences, cx);
             } else if event.keystroke.key == "q" {
                 cx.quit();
             }
@@ -188,8 +202,7 @@ impl Desktop {
                             .child(page.title(language)),
                     )
                     .on_click(cx.listener(move |view, _, _, cx| {
-                        view.page = page;
-                        cx.notify();
+                        view.select_page(page, cx);
                     })),
             );
         }

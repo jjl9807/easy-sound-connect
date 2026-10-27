@@ -156,6 +156,7 @@ fn handshake(functions: &[u8], t2: bool) -> Vec<Exchange> {
     exchanges.extend([
         Exchange::new(&[4, 1], b"\x05\x01\x04Demo"),
         Exchange::new(&[4, 2], b"\x05\x02\x031.0"),
+        Exchange::new(&[4, 3], &[5, 3, 0xfe, 0xfd]),
     ]);
     exchanges
 }
@@ -243,7 +244,7 @@ async fn handshake_retains_table_identity_and_tws_zero_and_case_readings() {
         Exchange::new(&[0x22, 1], &[0x23, 1, 0, 0, 83, 1]).notice(&[0x25, 1, 14, 0, 19, 0]),
         Exchange::new(&[0x22, 2], &[0x23, 2, 95, 0]),
     ]);
-    let (peer, _) = peer(driver, script);
+    let (peer, trace) = peer(driver, script);
     let manager = DeviceManager::new(backend);
     let handle = connect(&manager, "tws").await;
     assert_eq!(handle.snapshot().connection, ConnectionState::Connected);
@@ -254,6 +255,10 @@ async fn handshake_retains_table_identity_and_tws_zero_and_case_readings() {
     let state = handle.snapshot();
     assert_eq!(state.connection, ConnectionState::Ready);
     assert_eq!(state.model_name.unwrap().as_utf8().unwrap(), "Demo");
+    let appearance = state.appearance.unwrap();
+    assert_eq!(appearance.series.as_raw(), 0xfe);
+    assert_eq!(appearance.color.as_raw(), 0xfd);
+    assert!(trace.lock().unwrap().contains(&vec![4, 3]));
     assert_eq!(state.batteries.len(), 3);
     assert_eq!(
         state
@@ -291,6 +296,48 @@ async fn handshake_retains_table_identity_and_tws_zero_and_case_readings() {
             .all(|entry| entry.freshness == Freshness::Stale)
     );
     handle.close().await.unwrap();
+    peer.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn malformed_appearance_keeps_color_unknown_without_changing_device_capabilities() {
+    let backend = Arc::new(TestBackend::default());
+    let mut script = handshake(&[0x20], false);
+    *script.last_mut().unwrap() = Exchange::new(&[4, 3], &[5, 3, 0x01]);
+    script.push(Exchange::new(&[0x22, 0], &[0x23, 0, 80, 0]));
+    let (peer, _) = peer(backend.insert("a"), script);
+    let manager = DeviceManager::new(backend);
+    let handle = connect(&manager, "a").await;
+    assert_eq!(
+        handle.initialize().await.unwrap(),
+        OperationResult::Synchronized
+    );
+    let snapshot = handle.snapshot();
+    assert_eq!(snapshot.connection, ConnectionState::Ready);
+    assert_eq!(snapshot.appearance, None);
+    assert!(snapshot.last_error.is_some());
+    assert_eq!(snapshot.batteries[0].reading.unwrap().level.as_u8(), 80);
+    assert!(snapshot.functions[0].readable);
+    handle.close().await.unwrap();
+    peer.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn appearance_query_ack_does_not_supply_color_or_complete_initialization() {
+    let backend = Arc::new(TestBackend::default());
+    let mut script = handshake(&[], false);
+    *script.last_mut().unwrap() = Exchange::ack(&[4, 3]);
+    let (peer, trace) = peer(backend.insert("a"), script);
+    let manager = DeviceManager::new(backend);
+    let handle = connect(&manager, "a").await;
+    assert_eq!(
+        handle.initialize().await,
+        Err(Error::Timeout(TimeoutStage::Response))
+    );
+    handle.close().await.unwrap();
+    assert_eq!(handle.snapshot().connection, ConnectionState::Failed);
+    assert_eq!(handle.snapshot().appearance, None);
+    assert_eq!(trace.lock().unwrap().last(), Some(&vec![4, 3]));
     peer.await.unwrap();
 }
 
@@ -1650,7 +1697,7 @@ async fn message_counters_separate_responses_and_notifications_before_after_and_
     assert_eq!(
         handle.snapshot().message_counters,
         ezsc_core::MessageCounters {
-            responses: 5,
+            responses: 6,
             ..Default::default()
         }
     );
@@ -1658,7 +1705,7 @@ async fn message_counters_separate_responses_and_notifications_before_after_and_
     assert_eq!(
         handle.snapshot().message_counters,
         ezsc_core::MessageCounters {
-            responses: 7,
+            responses: 8,
             notifications: 3,
             noise_parameters_notifications: 2,
             equalizer_parameters_notifications: 0,
@@ -1672,7 +1719,7 @@ async fn message_counters_separate_responses_and_notifications_before_after_and_
     assert_eq!(
         handle.snapshot().message_counters,
         ezsc_core::MessageCounters {
-            responses: 10,
+            responses: 11,
             notifications: 4,
             noise_parameters_notifications: 2,
             equalizer_parameters_notifications: 1,
@@ -1680,12 +1727,12 @@ async fn message_counters_separate_responses_and_notifications_before_after_and_
         }
     );
 
-    // Fourteen delivered peer frames above leave the next reliable sequence at
-    // zero. Deliver an independent notification, its retransmission, an invalid
+    // Fifteen delivered peer frames above leave the next reliable sequence at
+    // one. Deliver an independent notification, its retransmission, an invalid
     // notification and an unmatched response without issuing another GET.
     let notification = Frame {
         data_type: DataType::DATA_MDR,
-        sequence: Sequence::Zero,
+        sequence: Sequence::One,
         payload: vec![0x59, 0, 0xa0, 2, 7, 7],
     }
     .encode(16384)
@@ -1696,7 +1743,7 @@ async fn message_counters_separate_responses_and_notifications_before_after_and_
         .send(
             Frame {
                 data_type: DataType::DATA_MDR,
-                sequence: Sequence::One,
+                sequence: Sequence::Zero,
                 payload: vec![0x59, 0, 0xa0, 2],
             }
             .encode(16384)
@@ -1708,7 +1755,7 @@ async fn message_counters_separate_responses_and_notifications_before_after_and_
         .send(
             Frame {
                 data_type: DataType::DATA_MDR,
-                sequence: Sequence::Zero,
+                sequence: Sequence::One,
                 payload: vec![0x57, 0, 0xa0, 2, 6, 6],
             }
             .encode(16384)
@@ -1723,7 +1770,7 @@ async fn message_counters_separate_responses_and_notifications_before_after_and_
     assert_eq!(
         handle.snapshot().message_counters,
         ezsc_core::MessageCounters {
-            responses: 10,
+            responses: 11,
             notifications: 5,
             noise_parameters_notifications: 2,
             equalizer_parameters_notifications: 2,
@@ -1790,7 +1837,7 @@ async fn codec_initial_read_refresh_and_live_notifications_preserve_identity() {
         Some(AudioCodec::LDAC)
     );
     assert_eq!(state.audio_codec.unwrap().freshness, Freshness::Current);
-    assert_eq!(trace.lock().unwrap().len(), 6);
+    assert_eq!(trace.lock().unwrap().len(), 7);
     assert_eq!(
         handle.refresh_audio_codec().await.unwrap(),
         OperationResult::Synchronized
@@ -1811,14 +1858,14 @@ async fn codec_initial_read_refresh_and_live_notifications_preserve_identity() {
         0xa7
     );
 
-    // Nine responses/notifications above leave the peer sequence at one. A
+    // Ten responses/notifications above leave the peer sequence at zero. A
     // notification outside a query must publish the new codec without a GET.
     let mut updates = handle.subscribe();
     incoming
         .send(
             Frame {
                 data_type: DataType::DATA_MDR,
-                sequence: Sequence::One,
+                sequence: Sequence::Zero,
                 payload: vec![0x15, 2, 2],
             }
             .encode(16384)
@@ -1838,7 +1885,7 @@ async fn codec_initial_read_refresh_and_live_notifications_preserve_identity() {
     }
     assert_eq!(handle.snapshot().message_counters.notifications, 2);
     assert_eq!(handle.snapshot().unhandled_messages, 0);
-    assert_eq!(trace.lock().unwrap().len(), 8);
+    assert_eq!(trace.lock().unwrap().len(), 9);
     drop(incoming);
     handle.close().await.unwrap();
     assert_eq!(
@@ -1872,7 +1919,7 @@ async fn codec_notification_and_ack_cannot_satisfy_a_refresh() {
         Some(AudioCodec::AAC)
     );
     assert_eq!(state.audio_codec.unwrap().freshness, Freshness::Stale);
-    assert_eq!(trace.lock().unwrap().len(), 7);
+    assert_eq!(trace.lock().unwrap().len(), 8);
     peer.await.unwrap();
 }
 
@@ -1971,7 +2018,7 @@ async fn independent_prompt_dismissal_refreshes_advertised_codec() {
         Some(AudioCodec::LDAC)
     );
     assert!(!trace.lock().unwrap().iter().any(|p| p[0] == 0x98));
-    assert_eq!(trace.lock().unwrap().len(), 8);
+    assert_eq!(trace.lock().unwrap().len(), 9);
     handle.close().await.unwrap();
     peer.await.unwrap();
 }

@@ -122,7 +122,7 @@ pub fn is_dark(cx: &App) -> bool {
     cx.theme().is_dark()
 }
 
-/// AssetSource-relative path; all models intentionally use the supplied default.
+/// Theme-aware embedded placeholder while product artwork is unavailable.
 pub fn product_image(cx: &App) -> &'static str {
     if is_dark(cx) {
         "model_image_default_dark.png"

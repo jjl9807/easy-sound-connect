@@ -1,6 +1,6 @@
 //! The sidebar's selected headset and saved-device popover.
 
-use crate::{Desktop, Session, device_status, gui_theme};
+use crate::{Desktop, Session, device_status, gui_product_images, product_assets::ModelKey};
 use bluetooth::{DeviceId, TransportKind};
 use ezsc_core::ConnectionState;
 use gpui_kit::component::{
@@ -37,7 +37,15 @@ impl Desktop {
             .border_color(cx.theme().border)
             .bg(cx.theme().group_box)
             .child(
-                card(name, status, color, battery, cx).child(
+                card(
+                    name,
+                    status,
+                    color,
+                    battery,
+                    gui_product_images::model_key(state, state.focused_device.as_ref()),
+                    cx,
+                )
+                .child(
                     svg()
                         .path("icons/chevron-down.svg")
                         .size(px(13.))
@@ -72,7 +80,14 @@ impl Desktop {
     }
 }
 
-fn card(name: String, status: &'static str, color: Hsla, battery: String, cx: &App) -> Div {
+fn card(
+    name: String,
+    status: &'static str,
+    color: Hsla,
+    battery: String,
+    model: Option<ModelKey>,
+    cx: &App,
+) -> Div {
     div()
         .flex()
         .items_center()
@@ -81,7 +96,7 @@ fn card(name: String, status: &'static str, color: Hsla, battery: String, cx: &A
         .w_full()
         .min_w_0()
         .child(
-            img(gui_theme::product_image(cx))
+            img(gui_product_images::source(model, None, cx))
                 .object_fit(ObjectFit::Contain)
                 .size(px(40.))
                 .flex_shrink_0(),
@@ -237,6 +252,7 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                         language.text("Not connected", "未连接"),
                         cx.theme().muted_foreground,
                         "—".into(),
+                        None,
                         cx,
                     ))
                     .on_click(move |_, _, cx| {
@@ -316,7 +332,14 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                                 "{} {name}",
                                 language.text("Select", "选择")
                             ))
-                            .child(card(name.clone(), status, color, battery, cx))
+                            .child(card(
+                                name.clone(),
+                                status,
+                                color,
+                                battery,
+                                gui_product_images::model_key(state, Some(&id)),
+                                cx,
+                            ))
                             .on_click(move |_, _, cx| {
                                 select_session.update(cx, |state, cx| {
                                     state.select_saved_device(select_id.clone());

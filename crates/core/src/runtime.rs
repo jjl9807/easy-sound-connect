@@ -727,6 +727,7 @@ impl Actor {
                     Step::FunctionLists,
                     Step::Query(Request::DeviceInfo(DeviceInfoKind::ModelName)),
                     Step::Query(Request::DeviceInfo(DeviceInfoKind::FirmwareVersion)),
+                    Step::Query(Request::DeviceInfo(DeviceInfoKind::SeriesAndColor)),
                     Step::BatteryQueries,
                     Step::AudioCodecQuery,
                     Step::EnableAlerts,
@@ -1662,6 +1663,9 @@ impl Actor {
             }
             Response::DeviceInfo(DeviceInfo::FirmwareVersion(version)) => {
                 self.snapshot.firmware_version = Some(version)
+            }
+            Response::DeviceInfo(DeviceInfo::SeriesAndColor(appearance)) => {
+                self.snapshot.appearance = Some(appearance)
             }
             Response::BatteryStatus(status) => self.snapshot.battery(status),
             Response::CommonStatus(CommonStatus::AudioCodec(codec)) => self.audio_codec(codec),

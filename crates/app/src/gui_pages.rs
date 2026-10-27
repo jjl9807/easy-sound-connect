@@ -1,6 +1,6 @@
 //! Product pages built from shared device state and client preferences.
 use crate::{
-    Desktop, Page, button, gui_shell, gui_theme,
+    Desktop, Page, button, gui_shell,
     preferences::{Language, ThemeMode},
 };
 use ezsc_core::{BatteryComponent, ConnectionState, Freshness};
@@ -111,10 +111,22 @@ impl Desktop {
         let connection = snapshot
             .map(|s| connection_text(s.connection, language))
             .unwrap_or(language.text("Not connected", "未连接"));
-        let image = img(gui_theme::product_image(cx))
-            .object_fit(ObjectFit::Contain)
-            .size(px(if compact { 64. } else { 220. }))
-            .flex_shrink_0();
+        let playback = (!compact)
+            .then_some(snapshot)
+            .flatten()
+            .filter(|s| {
+                s.connection == ConnectionState::Ready
+                    && state.focused_device.as_ref() == Some(&s.device)
+            })
+            .map(|s| (s.device.0.clone(), state.epoch));
+        let image = img(crate::gui_product_images::source(
+            crate::gui_product_images::model_key(state, state.focused_device.as_ref()),
+            playback,
+            cx,
+        ))
+        .object_fit(ObjectFit::Contain)
+        .size(px(if compact { 64. } else { 220. }))
+        .flex_shrink_0();
         let mut status = div()
             .flex()
             .flex_col()
@@ -265,8 +277,7 @@ impl Desktop {
                 .child(
                     button("go-sound", language.text("Open Sound", "打开声音设置")).on_click(
                         cx.listener(|view, _, _, cx| {
-                            view.page = Page::Sound;
-                            cx.notify();
+                            view.select_page(Page::Sound, cx);
                         }),
                     ),
                 ),

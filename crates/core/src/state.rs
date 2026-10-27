@@ -6,7 +6,7 @@ use libmdr2::{
     battery::{BatteryKind, BatteryReading, BatteryReadings, BatteryStatus},
     command::{CapabilityInfo, ProtocolInfo, SupportedFunction},
     common::{AudioCodec, CommonKind},
-    device::DeviceText,
+    device::{DeviceText, SeriesAndColor},
     equalizer::{
         EqualizerBandInfo, EqualizerCapability, EqualizerKind, EqualizerParameters, EqualizerStatus,
     },
@@ -133,6 +133,8 @@ pub struct DeviceSnapshot {
     pub functions: Vec<FunctionSupport>,
     pub model_name: Option<DeviceText>,
     pub firmware_version: Option<DeviceText>,
+    /// Raw series/color metadata, used only for product presentation.
+    pub appearance: Option<SeriesAndColor>,
     pub batteries: Vec<BatteryEndpoint>,
     pub noise: Vec<NoiseState>,
     pub equalizers: Vec<EqualizerState>,
@@ -164,6 +166,7 @@ impl DeviceSnapshot {
             functions: Vec::new(),
             model_name: None,
             firmware_version: None,
+            appearance: None,
             batteries: Vec::new(),
             noise: Vec::new(),
             equalizers: Vec::new(),

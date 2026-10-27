@@ -45,6 +45,9 @@ pub(super) struct SavedDevice {
     pub(super) id: String,
     pub(super) name: Option<String>,
     pub(super) model_name: Option<String>,
+    /// Raw color reported by the headset, independent of the Bluetooth alias.
+    #[serde(default)]
+    pub(super) model_color: Option<u8>,
     pub(super) transport: SavedTransport,
 }
 
@@ -276,6 +279,7 @@ mod tests {
             id: id.into(),
             name: Some("Bluetooth alias".into()),
             model_name: Some("Test headset".into()),
+            model_color: Some(0x04),
             transport: SavedTransport::Rfcomm,
         }
     }
@@ -291,6 +295,7 @@ mod tests {
         assert_eq!(SavedDevices::read_from(&path).unwrap(), saved);
         let mut updated = device("one");
         updated.name = Some("New alias".into());
+        updated.model_color = Some(0xfe);
         updated.transport = SavedTransport::Gatt;
         saved.upsert(updated.clone());
         saved.save_to(&path).unwrap();
@@ -300,6 +305,10 @@ mod tests {
         assert_eq!(loaded.find(&updated.device_id()), Some(&updated));
         assert_eq!(updated.transport_kind(), TransportKind::Gatt);
         assert_eq!(updated.display_name(), "Test headset");
+        assert_eq!(
+            loaded.find(&updated.device_id()).unwrap().model_color,
+            Some(0xfe)
+        );
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
 
         saved.remove(&DeviceId("two".into()));
@@ -310,6 +319,21 @@ mod tests {
             SavedDevices::read_from(&path).unwrap(),
             SavedDevices::default()
         );
+    }
+
+    #[test]
+    fn absent_color_remains_unknown_instead_of_selecting_a_default_variant() {
+        let entry: SavedDevice = serde_json::from_value(serde_json::json!({
+            "id": "device",
+            "name": "Bluetooth alias",
+            "model_name": "Test headset",
+            "transport": "rfcomm"
+        }))
+        .unwrap();
+        assert_eq!(entry.model_color, None);
+        let encoded = serde_json::to_value(&entry).unwrap();
+        assert_eq!(encoded["model_color"], serde_json::Value::Null);
+        assert_eq!(entry.model_name.as_deref(), Some("Test headset"));
     }
 
     #[test]

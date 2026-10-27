@@ -107,6 +107,7 @@ pub(super) fn snapshot(tws: bool) -> DeviceSnapshot {
         functions,
         model_name: Some(name),
         firmware_version: None,
+        appearance: None,
         batteries,
         noise: vec![noise],
         equalizers: vec![equalizer],

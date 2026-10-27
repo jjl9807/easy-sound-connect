@@ -62,6 +62,7 @@ fn initialization(functions: &[u8], foreground: bool, notice: Option<&[u8]>) -> 
         Exchange::read(&[6, 0], &supported),
         Exchange::read(&[4, 1], b"\x05\x01\x07Fixture"),
         Exchange::read(&[4, 2], b"\x05\x02\x031.0"),
+        Exchange::read(&[4, 3], &[5, 3, 0x01, 0x00]),
     ];
     if functions.contains(&0x90) {
         let mut enable = Exchange::ack(&[0x94, 0, 0]);
