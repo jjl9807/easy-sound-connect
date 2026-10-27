@@ -108,11 +108,13 @@ assert_eq!(
 # Ok::<(), libmdr2::command::CommandError>(())
 ```
 
-SET bodies use the response fields except for inquiry `05`, whose body is `priority, control`. The supported write form uses control byte `00`; the API does not infer a stream-switching meaning for that byte.
+SET bodies use the response fields except for inquiry `05`, whose body is `priority, control`. `PriorityControl` represents the additional protocol enable/disable field: `Enabled` is `00`, and `Disabled` is `01`. Its exact business meaning is not established. It is separate from the notification's `SwitchingStream` field and does not guarantee a stream or transport change.
+
+`AudioSetting::ConnectionPriority` uses `Enabled` (`00`) for inquiry `05`; inquiries `00` and `02` retain their three-byte SET form. `AudioSetting::ConnectionPriorityWithControl` accepts an explicit control and requires inquiry `05`. Both forms require a known, advertised priority. Capability membership does not guarantee that the device will accept a requested mode; confirm the resulting priority through parameter reports or readback. Readback confirms the value at that time, not its persistence across a later connection or transport change.
 
 ```rust
 use libmdr2::{
-    audio::{AudioCapability, AudioSetting, PriorityMode},
+    audio::{AudioCapability, AudioSetting, PriorityControl, PriorityMode},
     types::CommandTable,
 };
 
@@ -121,12 +123,21 @@ let capability = AudioCapability::decode_response(
     &[0xe1, 0x05, 3, 0, 1, 2, 1, 0],
 )?;
 assert_eq!(
-    AudioSetting::ConnectionPriority(PriorityMode::LOW_LATENCY)
+    AudioSetting::ConnectionPriority(PriorityMode::SOUND_QUALITY)
         .encode_set(&capability)?,
-    [0xe8, 0x05, 0x02, 0x00],
+    [0xe8, 0x05, 0x00, 0x00],
+);
+assert_eq!(
+    AudioSetting::ConnectionPriorityWithControl {
+        priority: PriorityMode::SOUND_QUALITY,
+        control: PriorityControl::Disabled,
+    }.encode_set(&capability)?,
+    [0xe8, 0x05, 0x00, 0x01],
 );
 # Ok::<(), libmdr2::command::CommandError>(())
 ```
+
+A connection-priority request may require a separate [device message and explicit confirmation](alert.md). Enable message delivery only with a corresponding application flow, associate a received message with the current operation, and obtain a decision before replying. A read made before that decision can still report the previous priority. After a reply, confirm the resulting parameters; if the link ends, reconnect and read the actual value.
 
 Listening assignment writes replace the whole list. Each selected option must be known, advertised exactly once, and distinct in the requested list; every mandatory option must remain included. A conflicting duplicate descriptor is not silently resolved. Selection order is retained. Upmix and connection writes likewise require known, advertised choices. No value is clamped or substituted.
 

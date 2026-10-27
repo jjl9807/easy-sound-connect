@@ -266,6 +266,16 @@ macro_rules! wire_enum {
     };
 }
 wire_enum! {
+    /// The additional enable/disable control in an inquiry-`05` priority write.
+    /// Its business meaning is not established; it is not `SwitchingStream`.
+    PriorityControl, "connection priority control", {
+        /// Protocol ENABLE (`00`).
+        Enabled = 0,
+        /// Protocol DISABLE (`01`).
+        Disabled = 1,
+    }
+}
+wire_enum! {
     /// The configured DSEE mode; this does not indicate whether processing is active.
     DseeMode, "DSEE mode", {
         /// Disabled (`00`).
@@ -653,8 +663,17 @@ impl AudioParameters {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AudioSetting {
-    /// Select a known, advertised priority. Inquiry `05` includes control byte `00`.
+    /// Select a known, advertised priority. Inquiry `05` uses
+    /// [`PriorityControl::Enabled`] (`00`); inquiries `00` and `02` have no control byte.
     ConnectionPriority(PriorityMode),
+    /// Select a priority with an explicit protocol control for inquiry `05` only.
+    /// This control does not describe or guarantee an audio-stream transition.
+    ConnectionPriorityWithControl {
+        /// A known priority advertised by the matching capability.
+        priority: PriorityMode,
+        /// The additional enable/disable byte, separate from notification state.
+        control: PriorityControl,
+    },
     /// Configure DSEE auto/off.
     Dsee(DseeMode),
     /// Configure background listening without clearing its stored room size.
@@ -693,16 +712,19 @@ impl AudioSetting {
                 | AudioKind::ClassicLePriority,
                 AudioCapabilityData::Connection { priorities, .. },
             ) => {
-                if priority.as_raw() > 2 || !priorities.contains(priority) {
-                    return Err(CommandError::InvalidValue {
-                        field: "advertised connection priority",
-                        value: priority.as_raw(),
-                    });
-                }
+                validate_priority(*priority, priorities)?;
                 payload.push(priority.as_raw());
                 if kind == AudioKind::ClassicLePriority {
-                    payload.push(0);
+                    payload.push(PriorityControl::Enabled.as_u8());
                 }
+            }
+            (
+                Self::ConnectionPriorityWithControl { priority, control },
+                AudioKind::ClassicLePriority,
+                AudioCapabilityData::Connection { priorities, .. },
+            ) => {
+                validate_priority(*priority, priorities)?;
+                payload.extend([priority.as_raw(), control.as_u8()]);
             }
             (
                 Self::Dsee(mode),
@@ -776,6 +798,19 @@ impl AudioSetting {
         }
         Ok(payload)
     }
+}
+
+fn validate_priority(
+    priority: PriorityMode,
+    priorities: &[PriorityMode],
+) -> Result<(), CommandError> {
+    if priority.as_raw() > 2 || !priorities.contains(&priority) {
+        return Err(CommandError::InvalidValue {
+            field: "advertised connection priority",
+            value: priority.as_raw(),
+        });
+    }
+    Ok(())
 }
 
 fn header(table: CommandTable, p: &[u8], opcode: u8) -> Result<AudioKind, CommandError> {

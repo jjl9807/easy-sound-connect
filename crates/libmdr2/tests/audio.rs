@@ -1,8 +1,8 @@
 use libmdr2::{
     audio::{
         AudioCapability, AudioCapabilityData, AudioKind, AudioParameterValue, AudioParameters,
-        AudioSetting, AudioStatus, AudioStatusDetails, DseeMode, ListeningOption, PriorityMode,
-        RoomSize, SwitchingStream, UpmixItem, UpscalingType,
+        AudioSetting, AudioStatus, AudioStatusDetails, DseeMode, ListeningOption, PriorityControl,
+        PriorityMode, RoomSize, SwitchingStream, UpmixItem, UpscalingType,
     },
     types::{CommandTable, FunctionId},
 };
@@ -286,6 +286,81 @@ fn classic_le_response_notification_and_set_have_different_layouts() {
     assert!(AudioParameters::decode_response(T1, &[0xe7, 5, 2, 1]).is_err());
     assert!(AudioParameters::decode_notification(T1, &[0xe9, 5, 2]).is_err());
     assert!(AudioParameters::decode_notification(T1, &[0xe9, 5, 2, 3]).is_err());
+}
+
+#[test]
+fn classic_le_control_supports_both_protocol_values_without_changing_priority() {
+    let cap = capability(XM6_PRIORITY_CAP);
+    for priority in [
+        PriorityMode::SOUND_QUALITY,
+        PriorityMode::CONNECTION_QUALITY,
+        PriorityMode::LOW_LATENCY,
+    ] {
+        for (control, byte) in [
+            (PriorityControl::Enabled, 0),
+            (PriorityControl::Disabled, 1),
+        ] {
+            assert_eq!(
+                AudioSetting::ConnectionPriorityWithControl { priority, control }
+                    .encode_set(&cap)
+                    .unwrap(),
+                [0xe8, 5, priority.as_raw(), byte]
+            );
+        }
+        assert_eq!(
+            AudioSetting::ConnectionPriority(priority)
+                .encode_set(&cap)
+                .unwrap(),
+            [0xe8, 5, priority.as_raw(), 0]
+        );
+    }
+    assert_eq!(PriorityControl::try_from(0), Ok(PriorityControl::Enabled));
+    assert_eq!(PriorityControl::try_from(1), Ok(PriorityControl::Disabled));
+    assert!(PriorityControl::try_from(2).is_err());
+}
+
+#[test]
+fn explicit_priority_control_requires_classic_le_layout_and_advertised_known_priority() {
+    let control = PriorityControl::Disabled;
+    for kind in [
+        AudioKind::ConnectionPriority,
+        AudioKind::ConnectionPriorityWithStatus,
+    ] {
+        assert!(
+            AudioSetting::ConnectionPriorityWithControl {
+                priority: PriorityMode::SOUND_QUALITY,
+                control,
+            }
+            .encode_set(&AudioCapability::static_connection(kind).unwrap())
+            .is_err()
+        );
+    }
+    assert!(
+        AudioSetting::ConnectionPriorityWithControl {
+            priority: PriorityMode::SOUND_QUALITY,
+            control,
+        }
+        .encode_set(&capability(XM6_DSEE_CAP))
+        .is_err()
+    );
+    for (cap, priority) in [
+        (
+            capability(&[0xe1, 5, 2, 0, 1, 0]),
+            PriorityMode::LOW_LATENCY,
+        ),
+        (
+            capability(&[0xe1, 5, 2, 0, 0xaa, 0]),
+            PriorityMode::from_raw(0xaa),
+        ),
+    ] {
+        for control in [PriorityControl::Enabled, PriorityControl::Disabled] {
+            assert!(
+                AudioSetting::ConnectionPriorityWithControl { priority, control }
+                    .encode_set(&cap)
+                    .is_err()
+            );
+        }
+    }
 }
 
 #[test]
