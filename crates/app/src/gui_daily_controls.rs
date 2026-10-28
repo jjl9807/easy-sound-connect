@@ -3,6 +3,7 @@
 use crate::{
     Desktop,
     gui_controls::{ControlAction, availability, card, control_button, note},
+    gui_operation_feedback::OperationTarget,
 };
 use ezsc_core::{
     AudioChange, AudioState, ConnectionState, Freshness, SystemChange, SystemState,
@@ -25,10 +26,9 @@ impl Desktop {
     pub(super) fn render_audio_controls(&self, cx: &mut Context<Self>) -> Div {
         let language = self.language(cx);
         let state = self.session.read(cx);
-        let (snapshot, busy, blocked) = (
+        let (snapshot, blocked) = (
             state.snapshot.clone(),
-            state.busy,
-            state.settings_blocked() || state.preview,
+            state.settings_unavailable() || state.preview,
         );
         let mut cards = div().flex().flex_col().gap_4();
         let Some(snapshot) = snapshot else {
@@ -50,7 +50,9 @@ impl Desktop {
             };
             let mut section = card(title, cx).child(availability(
                 ready,
-                busy,
+                self.session
+                    .read(cx)
+                    .operation_feedback_visible(OperationTarget::Audio(entry.kind)),
                 entry.freshness,
                 entry.status.as_ref().is_some_and(|status| status.enabled),
                 language,
@@ -165,10 +167,9 @@ impl Desktop {
     pub(super) fn render_speak_controls(&self, cx: &mut Context<Self>) -> Div {
         let language = self.language(cx);
         let state = self.session.read(cx);
-        let (snapshot, busy, blocked) = (
+        let (snapshot, blocked) = (
             state.snapshot.clone(),
-            state.busy,
-            state.settings_blocked() || state.preview,
+            state.settings_unavailable() || state.preview,
         );
         let mut cards = div().flex().flex_col().gap_4();
         let Some(snapshot) = snapshot else {
@@ -184,9 +185,13 @@ impl Desktop {
                 continue;
             }
             let kind = entry.kind;
+            let waiting = self
+                .session
+                .read(cx)
+                .operation_feedback_visible(OperationTarget::System(kind));
             let mut section = card("Speak-to-Chat", cx).child(availability(
                 ready,
-                busy,
+                waiting,
                 entry.freshness,
                 entry.status.is_some_and(|status| status.enabled),
                 language,
@@ -288,7 +293,7 @@ impl Desktop {
             };
             section = section.child(availability(
                 ready,
-                busy,
+                waiting,
                 entry.extended_freshness,
                 entry.status.is_some_and(|status| status.enabled),
                 language,

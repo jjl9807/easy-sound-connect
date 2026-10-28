@@ -9,8 +9,12 @@ use gpui_kit::component::{ActiveTheme, Disableable};
 
 impl Session {
     pub(super) fn settings_blocked(&self) -> bool {
-        self.busy
-            || self.replying_to.is_some()
+        self.busy || self.settings_unavailable()
+    }
+
+    /// Temporary command serialization keeps controls' existing appearance.
+    pub(super) fn settings_unavailable(&self) -> bool {
+        self.replying_to.is_some()
             || self
                 .snapshot
                 .as_ref()

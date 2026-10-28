@@ -1,6 +1,7 @@
 //! One application-owned device bridge shared by all windows.
 use crate::{
     gui_controls,
+    gui_operation_feedback::{FEEDBACK_DELAY, OperationFeedback, OperationTarget},
     notices::{DISPLAY_DURATION, Notices, Severity},
     preferences::{Language, Preferences},
     saved_devices::{SavedDevice, SavedDevices},
@@ -21,6 +22,7 @@ pub(super) type SharedManager = Arc<Mutex<Option<Arc<DeviceManager>>>>;
 
 pub(super) enum Event {
     NoticeExpired(u64),
+    OperationFeedbackReady(u64, u64),
     Backend(Result<Arc<DeviceManager>, String>),
     SavedLoaded(SavedDevices, Option<String>),
     SavedWritten,
@@ -58,6 +60,7 @@ pub(super) struct Session {
     pub(super) epoch: u64,
     pub(super) discovering: bool,
     pub(super) busy: bool,
+    pub(super) operation_feedback: OperationFeedback,
     pub(super) message: String,
     pub(super) diagnostics: bool,
     pub(super) replying_to: Option<PromptId>,
@@ -147,6 +150,7 @@ impl Session {
             epoch: 0,
             discovering: false,
             busy: false,
+            operation_feedback: Default::default(),
             message: preferences
                 .language
                 .text("Starting Bluetooth…", "正在启动蓝牙…")
@@ -176,6 +180,12 @@ impl Session {
     fn receive(&mut self, event: Event) {
         if let Event::NoticeExpired(id) = &event {
             self.notices.dismiss(*id);
+            return;
+        }
+        if let Event::OperationFeedbackReady(epoch, generation) = &event {
+            if *epoch == self.epoch && self.can_show_operation_feedback() {
+                self.operation_feedback.reveal(*generation);
+            }
             return;
         }
         let language = self.preferences.language;
@@ -301,6 +311,7 @@ impl Session {
                     self.snapshot = Some(handle.snapshot());
                 }
                 self.busy = false;
+                self.operation_feedback.finish();
                 let successful = result.is_ok();
                 self.message = match result {
                     Ok(Completion::StateUpdated) => language
@@ -340,6 +351,7 @@ impl Session {
                     self.snapshot = Some(handle.snapshot());
                 }
                 self.busy = false;
+                self.operation_feedback.finish();
                 let successful = result.as_ref().is_ok_and(|r| {
                     matches!(
                         r,
@@ -474,6 +486,9 @@ impl Session {
                 )
         }) {
             self.pending_controls.clear();
+        }
+        if !self.can_show_operation_feedback() {
+            self.operation_feedback.finish();
         }
         self.observe_saved_result();
         self.record_activity(self.message.clone());
@@ -722,6 +737,7 @@ impl Session {
         self.display_language_request = None;
         self.display_language_deferred = false;
         self.epoch += 1;
+        self.operation_feedback.finish();
         let epoch = self.epoch;
         self.focused_device = Some(device.clone());
         self.selected = Some(device.clone());
@@ -849,6 +865,7 @@ impl Session {
         self.display_language_request = None;
         self.display_language_deferred = false;
         self.epoch += 1;
+        self.operation_feedback.finish();
         let epoch = self.epoch;
         self.busy = true;
         self.replying_to = None;
@@ -933,6 +950,7 @@ impl Session {
             return;
         };
         self.busy = true;
+        self.start_operation_feedback(OperationTarget::Refresh);
         self.message = self
             .preferences
             .language
@@ -962,6 +980,37 @@ impl Session {
             .map(|_| Completion::StateUpdated);
             let _ = sender.send(Event::Finished(epoch, result)).await;
         });
+    }
+
+    pub(super) fn start_operation_feedback(&mut self, target: OperationTarget) {
+        let generation = self.operation_feedback.start(target);
+        let epoch = self.epoch;
+        let sender = self.events.clone();
+        let cancel = self.lifetime.clone();
+        self.runtime.spawn(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => {},
+                _ = tokio::time::sleep(FEEDBACK_DELAY) => {
+                    tokio::select! {
+                        _ = cancel.cancelled() => {},
+                        _ = sender.send(Event::OperationFeedbackReady(epoch, generation)) => {},
+                    }
+                }
+            }
+        });
+    }
+
+    pub(super) fn operation_feedback_visible(&self, target: OperationTarget) -> bool {
+        self.can_show_operation_feedback() && self.operation_feedback.is_visible(target)
+    }
+
+    fn can_show_operation_feedback(&self) -> bool {
+        self.busy
+            && !self.settings_unavailable()
+            && self
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.connection == ezsc_core::ConnectionState::Ready)
     }
 }
 
@@ -1125,6 +1174,7 @@ mod tests {
                 epoch: 0,
                 discovering: false,
                 busy: false,
+                operation_feedback: Default::default(),
                 message: String::new(),
                 diagnostics: false,
                 replying_to: None,
@@ -1233,6 +1283,104 @@ mod tests {
         let notice = state.notices.current().unwrap();
         assert_eq!(notice.severity, Severity::Error);
         assert!(notice.message.contains("Current discovery"));
+    }
+
+    #[tokio::test]
+    async fn waiting_keeps_visual_availability_but_rejects_conflicting_actions() {
+        let (mut state, _incoming) = session();
+        state.preview = true;
+        let snapshot = crate::gui_preview::snapshot(true);
+        let current = snapshot.device.clone();
+        let other = DeviceId("other".into());
+        state.saved_devices.upsert(saved(&current.0));
+        state.saved_devices.upsert(saved(&other.0));
+        state.selected = Some(current.clone());
+        state.focused_device = Some(current.clone());
+        state.snapshot = Some(snapshot);
+        state.busy = true;
+
+        assert!(state.settings_blocked());
+        assert!(!state.settings_unavailable());
+        state.select_saved_device(other);
+        state.forget_device(current.clone());
+        state.release();
+        state.begin_add_device();
+        assert_eq!(state.focused_device.as_ref(), Some(&current));
+        assert_eq!(state.selected.as_ref(), Some(&current));
+        assert!(state.saved_devices.find(&current).is_some());
+        assert!(state.snapshot.is_some());
+        assert!(!state.adding_device);
+
+        state.replying_to = Some(PromptId {
+            generation: 1,
+            serial: 1,
+        });
+        assert!(state.settings_unavailable());
+        state.busy = false;
+        assert!(state.settings_blocked());
+    }
+
+    #[tokio::test]
+    async fn delayed_feedback_does_not_change_history_or_reveal_an_old_session() {
+        let (mut state, mut incoming) = session();
+        state.epoch = 3;
+        state.snapshot = Some(crate::gui_preview::snapshot(true));
+        state.busy = true;
+        state.message = "Waiting for readback".into();
+        state.start_operation_feedback(OperationTarget::Refresh);
+        assert!(!state.operation_feedback_visible(OperationTarget::Refresh));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), incoming.recv())
+                .await
+                .is_err()
+        );
+        let event = tokio::time::timeout(Duration::from_secs(2), incoming.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let Event::OperationFeedbackReady(epoch, generation) = event else {
+            panic!("expected delayed feedback");
+        };
+        let history = state.activity.clone();
+        state.receive(Event::OperationFeedbackReady(epoch - 1, generation));
+        assert!(!state.operation_feedback_visible(OperationTarget::Refresh));
+        state.receive(Event::OperationFeedbackReady(epoch, generation));
+        assert!(state.operation_feedback_visible(OperationTarget::Refresh));
+        assert_eq!(state.message, "Waiting for readback");
+        assert_eq!(state.activity, history);
+
+        state.receive(Event::Finished(epoch, Ok(Completion::StateUpdated)));
+        assert!(!state.operation_feedback_visible(OperationTarget::Refresh));
+        state.receive(Event::OperationFeedbackReady(epoch, generation));
+        assert!(!state.operation_feedback_visible(OperationTarget::Refresh));
+    }
+
+    #[tokio::test]
+    async fn interrupted_feedback_cannot_reappear_after_a_prompt_or_disconnect() {
+        for disconnect in [false, true] {
+            let (mut state, _incoming) = session();
+            state.snapshot = Some(crate::gui_preview::snapshot(true));
+            state.busy = true;
+            let generation = state.operation_feedback.start(OperationTarget::Refresh);
+            state.receive(Event::OperationFeedbackReady(0, generation));
+            assert!(state.operation_feedback_visible(OperationTarget::Refresh));
+            if disconnect {
+                let mut ended = state.snapshot.clone().unwrap();
+                ended.connection = ezsc_core::ConnectionState::Disconnected;
+                state.receive(Event::Snapshot(0, Box::new(ended)));
+            } else {
+                state.replying_to = Some(PromptId {
+                    generation: 1,
+                    serial: 1,
+                });
+                state.receive(Event::SavedWritten);
+            }
+            assert!(!state.operation_feedback_visible(OperationTarget::Refresh));
+            state.replying_to = None;
+            state.snapshot = Some(crate::gui_preview::snapshot(true));
+            state.receive(Event::OperationFeedbackReady(0, generation));
+            assert!(!state.operation_feedback_visible(OperationTarget::Refresh));
+        }
     }
 
     #[tokio::test]

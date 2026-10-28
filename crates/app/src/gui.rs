@@ -9,6 +9,7 @@ mod gui_daily_controls;
 mod gui_device_picker;
 mod gui_device_prompts;
 mod gui_notices;
+mod gui_operation_feedback;
 mod gui_pages;
 mod gui_preview;
 mod gui_product_images;

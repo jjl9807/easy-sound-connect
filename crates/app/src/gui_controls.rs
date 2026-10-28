@@ -1,6 +1,7 @@
 //! Capability-driven controls. Draft slider positions never replace device state.
 
 use crate::gui_daily_controls::{audio_change_ready, system_change_ready};
+use crate::gui_operation_feedback::OperationTarget;
 use crate::preferences::Language;
 use crate::{Desktop, Event, Session};
 #[cfg(test)]
@@ -92,6 +93,17 @@ pub(super) enum ControlAction {
     BandInfo(EqualizerKind),
 }
 impl ControlAction {
+    fn target(self) -> OperationTarget {
+        match self {
+            Self::Noise(kind, _) => OperationTarget::Noise(kind),
+            Self::Audio(kind, _) => OperationTarget::Audio(kind),
+            Self::System(kind, _) => OperationTarget::System(kind),
+            Self::Preset(kind, _) | Self::Band { kind, .. } | Self::BandInfo(kind) => {
+                OperationTarget::Equalizer(kind)
+            }
+        }
+    }
+
     fn same_slider(self, other: Self) -> bool {
         match (self, other) {
             (
@@ -218,6 +230,7 @@ impl Session {
             self.pending_controls.clear();
         }
         self.busy = true;
+        self.start_operation_feedback(action.target());
         self.message = format!(
             "{}: {label}. {}",
             self.preferences.language.text("Pending", "等待确认"),
@@ -554,10 +567,9 @@ impl Desktop {
     ) -> Div {
         let language = self.language(cx);
         let state = self.session.read(cx);
-        let (snapshot, busy, blocked) = (
+        let (snapshot, blocked) = (
             state.snapshot.clone(),
-            state.busy,
-            state.settings_blocked() || state.preview,
+            state.settings_unavailable() || state.preview,
         );
         let mut cards = div().flex().flex_col().gap_4();
         let Some(snapshot) = snapshot else {
@@ -578,7 +590,9 @@ impl Desktop {
             let mut section =
                 card(language.text("Noise control", "降噪与环境声"), cx).child(availability(
                     ready,
-                    busy,
+                    self.session
+                        .read(cx)
+                        .operation_feedback_visible(OperationTarget::Noise(entry.kind)),
                     entry.freshness,
                     entry
                         .status
@@ -774,10 +788,9 @@ impl Desktop {
     ) -> Div {
         let language = self.language(cx);
         let state = self.session.read(cx);
-        let (snapshot, busy, blocked) = (
+        let (snapshot, blocked) = (
             state.snapshot.clone(),
-            state.busy,
-            state.settings_blocked() || state.preview,
+            state.settings_unavailable() || state.preview,
         );
         let mut cards = div().flex().flex_col().gap_4();
         let Some(snapshot) = snapshot else {
@@ -793,7 +806,9 @@ impl Desktop {
             let enabled = editable && equalizer_ready(entry);
             let mut section = card(language.text("Equalizer", "均衡器"), cx).child(availability(
                 ready,
-                busy,
+                self.session
+                    .read(cx)
+                    .operation_feedback_visible(OperationTarget::Equalizer(entry.kind)),
                 entry.freshness,
                 entry
                     .status
@@ -1164,7 +1179,7 @@ pub(super) fn note(text: impl Into<SharedString>, cx: &App) -> Div {
 }
 pub(super) fn availability(
     ready: bool,
-    busy: bool,
+    waiting: bool,
     freshness: Freshness,
     available: bool,
     language: Language,
@@ -1176,8 +1191,6 @@ pub(super) fn availability(
                 "Connect your headset to use this control.",
                 "连接耳机后可使用此功能。",
             )
-        } else if busy {
-            language.text("Applying changes…", "正在应用更改…")
         } else if freshness != Freshness::Current {
             language.text("Refresh state before editing.", "请刷新状态后再编辑。")
         } else if !available {
@@ -1185,6 +1198,8 @@ pub(super) fn availability(
                 "Temporarily unavailable on the headset.",
                 "耳机当前暂不可用。",
             )
+        } else if waiting {
+            language.text("Waiting for the headset…", "正在等待耳机响应…")
         } else {
             language.text("Synced with your headset", "已与耳机同步")
         },

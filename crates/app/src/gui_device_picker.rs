@@ -175,7 +175,7 @@ fn card_status(
 fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut App) -> Div {
     let state = session.read(cx);
     let language = state.preferences.language;
-    let blocked = state.settings_blocked() || (!state.preview && state.manager.is_none());
+    let blocked = state.settings_unavailable() || (!state.preview && state.manager.is_none());
     let adding = state.adding_device;
     let mut content = div().flex().flex_col().gap_2().w_full().min_w_0();
     content = content.child(
@@ -263,6 +263,9 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                         cx,
                     ))
                     .on_click(move |_, _, cx| {
+                        if connect_session.read(cx).settings_blocked() {
+                            return;
+                        }
                         connect_session.update(cx, |state, cx| {
                             state.connect(id.clone(), transport);
                             state.finish_add_device();
@@ -295,6 +298,9 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                         .w_full()
                         .disabled(blocked || state.discovering)
                         .on_click(move |_, _, cx| {
+                            if session.read(cx).settings_blocked() {
+                                return;
+                            }
                             session.update(cx, |state, cx| {
                                 state.connect(id.clone(), alternate);
                                 state.finish_add_device();
@@ -339,6 +345,9 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                         cx,
                     ))
                     .on_click(move |_, _, cx| {
+                        if select_session.read(cx).settings_blocked() {
+                            return;
+                        }
                         select_session.update(cx, |state, cx| {
                             state.select_saved_device(select_id.clone());
                             cx.notify();

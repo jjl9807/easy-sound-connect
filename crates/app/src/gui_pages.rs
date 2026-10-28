@@ -54,7 +54,7 @@ impl Desktop {
             s.connection == ConnectionState::Ready
                 && state.focused_device.as_ref() == Some(&s.device)
         });
-        let blocked = state.settings_blocked() || (!state.preview && state.manager.is_none());
+        let blocked = state.settings_unavailable() || (!state.preview && state.manager.is_none());
         let has_focused_device = state.focused_device.is_some();
         let removable_device = state
             .focused_device
@@ -73,6 +73,10 @@ impl Desktop {
                     )
                     .ghost()
                     .disabled(blocked || state.preview)
+                    .loading_icon(IconName::RefreshCw)
+                    .loading(state.operation_feedback_visible(
+                        crate::gui_operation_feedback::OperationTarget::Refresh,
+                    ))
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.session.update(cx, |state, cx| {
                             state.refresh();
