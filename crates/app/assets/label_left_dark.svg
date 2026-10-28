@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="left-dark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #fff;
+      }
+    </style>
+  </defs>
+  <circle class="cls-1" cx="32" cy="32" r="32"/>
+  <path d="M21.61,50.49V12.64h6.19V45.18h16.02v5.31H21.61Z"/>
+</svg>

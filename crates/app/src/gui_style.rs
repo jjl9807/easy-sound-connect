@@ -6,6 +6,16 @@ use gpui_kit::component::{
 };
 use gpui_kit::{prelude::*, *};
 
+pub(super) fn card_shadow(cx: &App) -> Vec<BoxShadow> {
+    vec![BoxShadow {
+        color: hsla(0., 0., 0., if cx.theme().is_dark() { 0.28 } else { 0.035 }),
+        offset: point(px(0.), px(6.)),
+        blur_radius: px(14.),
+        spread_radius: px(0.),
+        inset: false,
+    }]
+}
+
 pub(super) fn surface(cx: &App) -> Div {
     div()
         .relative()
@@ -17,13 +27,7 @@ pub(super) fn surface(cx: &App) -> Div {
         .bg(cx.theme().group_box)
         .border_1()
         .border_color(cx.theme().border)
-        .shadow(vec![BoxShadow {
-            color: hsla(0., 0., 0., if cx.theme().is_dark() { 0.28 } else { 0.035 }),
-            offset: point(px(0.), px(6.)),
-            blur_radius: px(14.),
-            spread_radius: px(0.),
-            inset: false,
-        }])
+        .shadow(card_shadow(cx))
 }
 
 pub(super) fn card(title: impl Into<SharedString>, cx: &App) -> Div {

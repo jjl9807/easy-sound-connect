@@ -50,6 +50,8 @@ gpui_kit::assets::icon_assets!(
         Power,
         Battery,
         BatteryCharging,
+        BatteryFull,
+        BatteryMedium,
         BatteryLow,
         Copy,
         X
@@ -67,6 +69,31 @@ impl AssetSource for Assets {
             }
             "tray_icon_dark.svg" => Some(include_bytes!("../assets/tray_icon_dark.svg")),
             "tray_icon_light.svg" => Some(include_bytes!("../assets/tray_icon_light.svg")),
+            "app_logo.svg" => Some(include_bytes!("../assets/app_logo.svg")),
+            "label_left_dark.svg" => Some(include_bytes!("../assets/label_left_dark.svg")),
+            "label_left_light.svg" => Some(include_bytes!("../assets/label_left_light.svg")),
+            "label_right_dark.svg" => Some(include_bytes!("../assets/label_right_dark.svg")),
+            "label_right_light.svg" => Some(include_bytes!("../assets/label_right_light.svg")),
+            "codec_aac_dark.png" => Some(include_bytes!("../assets/codec_aac_dark.png")),
+            "codec_aac_light.png" => Some(include_bytes!("../assets/codec_aac_light.png")),
+            "codec_aptx_dark.png" => Some(include_bytes!("../assets/codec_aptx_dark.png")),
+            "codec_aptx_light.png" => Some(include_bytes!("../assets/codec_aptx_light.png")),
+            "codec_aptxhd_dark.png" => Some(include_bytes!("../assets/codec_aptxhd_dark.png")),
+            "codec_aptxhd_light.png" => Some(include_bytes!("../assets/codec_aptxhd_light.png")),
+            "codec_lc3_dark.png" => Some(include_bytes!("../assets/codec_lc3_dark.png")),
+            "codec_lc3_light.png" => Some(include_bytes!("../assets/codec_lc3_light.png")),
+            "codec_ldac_dark.png" => Some(include_bytes!("../assets/codec_ldac_dark.png")),
+            "codec_ldac_light.png" => Some(include_bytes!("../assets/codec_ldac_light.png")),
+            "codec_sbc_dark.png" => Some(include_bytes!("../assets/codec_sbc_dark.png")),
+            "codec_sbc_light.png" => Some(include_bytes!("../assets/codec_sbc_light.png")),
+            "dsee_dark.png" => Some(include_bytes!("../assets/dsee_dark.png")),
+            "dsee_light.png" => Some(include_bytes!("../assets/dsee_light.png")),
+            "dsee_ult_dark.png" => Some(include_bytes!("../assets/dsee_ult_dark.png")),
+            "dsee_ult_light.png" => Some(include_bytes!("../assets/dsee_ult_light.png")),
+            "dseehx_ai_dark.png" => Some(include_bytes!("../assets/dseehx_ai_dark.png")),
+            "dseehx_ai_light.png" => Some(include_bytes!("../assets/dseehx_ai_light.png")),
+            "dseehx_dark.png" => Some(include_bytes!("../assets/dseehx_dark.png")),
+            "dseehx_light.png" => Some(include_bytes!("../assets/dseehx_light.png")),
             _ => None,
         };
         if let Some(bytes) = local {
@@ -80,6 +107,21 @@ impl AssetSource for Assets {
     fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
         gpui_kit::assets::Assets.list(path)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn window_icon() -> Option<Arc<image::RgbaImage>> {
+    static ICON: std::sync::OnceLock<Option<Arc<image::RgbaImage>>> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        match desktop_integration::render_icon(include_bytes!("../assets/app_logo.svg"), 256) {
+            Ok(pixels) => image::RgbaImage::from_raw(256, 256, pixels).map(Arc::new),
+            Err(error) => {
+                eprintln!("Unable to load the application icon: {error}");
+                None
+            }
+        }
+    })
+    .clone()
 }
 
 pub(super) fn run() {
@@ -341,6 +383,8 @@ fn show_main(cx: &mut App) {
         ))),
         window_min_size: Some(size(px(920.), px(640.))),
         app_id: Some(app::APP_ID.into()),
+        #[cfg(target_os = "linux")]
+        icon: window_icon(),
         ..crate::gui_titlebar::window_options()
     };
     match gpui_kit::open_window(options, cx, |window, cx| {
@@ -479,6 +523,8 @@ fn open_panel(anchor: Option<ScreenPoint>, cx: &mut App) {
         window_decorations: cfg!(target_os = "linux").then_some(WindowDecorations::Client),
         display_id: display.map(|d| d.id()),
         app_id: Some(app::APP_ID.into()),
+        #[cfg(target_os = "linux")]
+        icon: window_icon(),
         ..Default::default()
     };
     match gpui_kit::open_window(options, cx, |window, cx| {

@@ -96,8 +96,9 @@ fn entry_contents(executable: &str) -> Result<String, String> {
         }
     }
     Ok(format!(
-        "[Desktop Entry]\nType=Application\nName={}\nExec=\"{quoted}\" --background\nTerminal=false\nStartupWMClass={}\nX-GNOME-Autostart-enabled=true\n",
+        "[Desktop Entry]\nType=Application\nName={}\nExec=\"{quoted}\" --background\nTerminal=false\nIcon={}\nStartupWMClass={}\nX-GNOME-Autostart-enabled=true\n",
         app::APP_NAME,
+        app::APP_ID,
         app::APP_ID,
     ))
 }
@@ -169,6 +170,7 @@ mod tests {
         assert!(content.contains("Exec=\"/opt/Sound Connect/100%%/ezsc\" --background\n"));
         assert!(content.contains("Name=Easy Sound Connect\n"));
         assert!(content.contains("StartupWMClass=com.jjl9807.ezsc\n"));
+        assert!(content.contains("Icon=com.jjl9807.ezsc\n"));
         assert!(!content.contains("KeepAlive"));
         assert!(entry_contents("/tmp/bad\ncommand").is_err());
     }

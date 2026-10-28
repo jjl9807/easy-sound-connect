@@ -3,7 +3,7 @@ use crate::{
     Desktop, button, gui_shell, gui_style,
     preferences::{Language, ThemeMode},
 };
-use ezsc_core::{BatteryComponent, ConnectionState, Freshness};
+use ezsc_core::ConnectionState;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Sizable,
     button::{Button, ButtonVariants},
@@ -238,116 +238,13 @@ impl Desktop {
             status = status.child(caption(connection_text(connection, language), cx));
         }
         if let Some(snapshot) = snapshot {
-            let mut batteries = div().flex().flex_wrap().justify_center().gap(px(24.));
-            for (index, endpoint) in snapshot.batteries.iter().enumerate() {
-                let label = match endpoint.component {
-                    BatteryComponent::Headset => language.text("Battery", "电量"),
-                    BatteryComponent::Left => language.text("Left", "左耳"),
-                    BatteryComponent::Right => language.text("Right", "右耳"),
-                    BatteryComponent::Case => language.text("Case", "充电盒"),
-                };
-                let current = ready && endpoint.freshness == Freshness::Current;
-                let level = endpoint.reading.map(|r| r.level.as_u8());
-                let charging = endpoint
-                    .reading
-                    .is_some_and(|r| r.charging == libmdr2::battery::ChargingStatus::Charging);
-                let tint = if !current {
-                    cx.theme().muted_foreground
-                } else if level.is_some_and(|level| level <= 20) {
-                    cx.theme().danger
-                } else {
-                    cx.theme().foreground
-                };
-                let icon = if charging {
-                    IconName::BatteryCharging
-                } else if level.is_some_and(|level| level <= 20) {
-                    IconName::BatteryLow
-                } else {
-                    IconName::Battery
-                };
-                let value = level.map_or_else(|| "—".to_owned(), |v| format!("{v}%"));
-                let charging_label =
-                    endpoint
-                        .reading
-                        .map_or("", |reading| match reading.charging {
-                            libmdr2::battery::ChargingStatus::Charging => {
-                                language.text(" · charging", " · 充电中")
-                            }
-                            libmdr2::battery::ChargingStatus::Charged => {
-                                language.text(" · fully charged", " · 已充满")
-                            }
-                            libmdr2::battery::ChargingStatus::NotCharging => "",
-                            _ => language.text(" · charging status unknown", " · 充电状态未知"),
-                        });
-                let age = if current || level.is_none() {
-                    ""
-                } else {
-                    language.text(" · last known", " · 上次读取")
-                };
-                let mut battery = div()
-                    .id(("hero-battery", index))
-                    .role(accesskit::Role::Group)
-                    .aria_label(format!("{label}: {value}{charging_label}{age}"))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(4.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(
-                                svg()
-                                    .path(icon.path())
-                                    .w(px(19.))
-                                    .h(px(19.))
-                                    .text_color(tint),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(tint)
-                                    .child(value),
-                            ),
-                    );
-                if endpoint.component != BatteryComponent::Headset {
-                    battery = battery.child(caption(label, cx).text_size(px(11.)));
-                }
-                if !current && endpoint.reading.is_some() {
-                    battery = battery.child(
-                        caption(language.text("Last known", "上次读取"), cx).text_size(px(11.)),
-                    );
-                }
-                batteries = batteries.child(battery);
-            }
-            status = status.child(batteries);
-            let mut badges = div().flex().flex_wrap().justify_center().gap(px(8.));
-            if let Some(codec) = &snapshot.audio_codec {
-                let value: String = codec
-                    .codec
-                    .map(|c| match c {
-                        ezsc_core::common::AudioCodec::SBC => "SBC".into(),
-                        ezsc_core::common::AudioCodec::AAC => "AAC".into(),
-                        ezsc_core::common::AudioCodec::LDAC => "LDAC".into(),
-                        ezsc_core::common::AudioCodec::LC3 => "LC3".into(),
-                        ezsc_core::common::AudioCodec::APT_X => "aptX".into(),
-                        ezsc_core::common::AudioCodec::APT_X_HD => "aptX HD".into(),
-                        ezsc_core::common::AudioCodec::UNSETTLED => {
-                            language.text("Not determined", "尚未确定").into()
-                        }
-                        _ => language.text("Unknown", "未知").into(),
-                    })
-                    .unwrap_or_else(|| "—".into());
-                let suffix = match codec.freshness {
-                    Freshness::Unknown => language.text(" · not read", " · 未读取"),
-                    Freshness::Current if ready => "",
-                    _ => language.text(" · last known", " · 上次读取"),
-                };
-                badges = badges.child(badge(format!("{value}{suffix}"), cx));
-            }
-            status = status.child(badges);
+            status = status
+                .child(crate::gui_status_icons::batteries(
+                    snapshot, ready, language, cx,
+                ))
+                .child(crate::gui_status_icons::audio_marks(
+                    snapshot, ready, language, cx,
+                ));
         }
         div()
             .flex()
@@ -726,7 +623,7 @@ impl Desktop {
             .child(desktop)
             .child(gui_style::card(l.text("Keyboard shortcuts", "键盘快捷键"), cx).child(shortcuts))
     }
-    pub(super) fn about_page(&self, cx: &Context<Self>) -> Div {
+    pub(super) fn about_page(&self, window: &Window, cx: &Context<Self>) -> Div {
         let l = self.language(cx);
         let identity = div()
             .flex()
@@ -734,21 +631,7 @@ impl Desktop {
             .items_center()
             .gap(px(12.))
             .py(px(28.))
-            .child(
-                div()
-                    .size(px(76.))
-                    .rounded(px(20.))
-                    .bg(cx.theme().accent)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        svg()
-                            .path(IconName::Headphones.path())
-                            .size(px(40.))
-                            .text_color(cx.theme().primary),
-                    ),
-            )
+            .child(crate::gui_app_logo::app_logo(108., window))
             .child(
                 div()
                     .text_size(px(28.))

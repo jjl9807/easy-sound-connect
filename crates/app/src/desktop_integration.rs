@@ -95,11 +95,11 @@ fn icon_rgba(dark: bool, size: u32) -> Result<Vec<u8>, String> {
     render_icon(data, size)
 }
 
-fn render_icon(data: &[u8], size: u32) -> Result<Vec<u8>, String> {
+pub(super) fn render_icon(data: &[u8], size: u32) -> Result<Vec<u8>, String> {
     let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default())
-        .map_err(|error| format!("Invalid tray image: {error}"))?;
+        .map_err(|error| format!("Invalid SVG image: {error}"))?;
     let mut pixmap = resvg::tiny_skia::Pixmap::new(size, size)
-        .ok_or_else(|| "Unable to allocate the tray image".to_owned())?;
+        .ok_or_else(|| "Unable to allocate the icon image".to_owned())?;
     resvg::render(
         &tree,
         resvg::tiny_skia::Transform::from_scale(
@@ -188,5 +188,15 @@ mod tests {
         assert!(light.as_chunks::<4>().0.iter().any(|p| p[3] == 0));
         assert!(light.as_chunks::<4>().0.iter().any(|p| p[3] == 255));
         assert_ne!(light, dark);
+    }
+
+    #[test]
+    fn application_logo_preserves_its_colors_and_transparent_corners() {
+        let pixels = render_icon(include_bytes!("../assets/app_logo.svg"), 256).unwrap();
+        assert_eq!(pixels.len(), 256 * 256 * 4);
+        let pixels = pixels.as_chunks::<4>().0;
+        assert_eq!(pixels[0][3], 0);
+        assert!(pixels.contains(&[250, 250, 250, 255]));
+        assert!(pixels.contains(&[68, 71, 72, 255]));
     }
 }

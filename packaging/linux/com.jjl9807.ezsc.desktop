@@ -2,6 +2,7 @@
 Type=Application
 Name=Easy Sound Connect
 Exec=easy-sound-connect
+Icon=com.jjl9807.ezsc
 Terminal=false
 Categories=AudioVideo;Audio;
 StartupWMClass=com.jjl9807.ezsc

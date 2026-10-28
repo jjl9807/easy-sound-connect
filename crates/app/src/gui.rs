@@ -4,6 +4,7 @@ extern crate gpui_kit as gpui;
 mod config;
 mod desktop_integration;
 mod device_status;
+mod gui_app_logo;
 mod gui_controls;
 mod gui_daily_controls;
 mod gui_device_picker;
@@ -15,6 +16,7 @@ mod gui_preview;
 mod gui_product_images;
 mod gui_session;
 mod gui_shell;
+mod gui_status_icons;
 mod gui_style;
 mod gui_theme;
 mod gui_titlebar;
@@ -382,7 +384,7 @@ impl Render for Desktop {
                             Page::Settings => self.settings_page(cx),
                             Page::Activity => self.activity_page(cx),
                             Page::Preferences => self.preferences_page(cx),
-                            Page::About => self.about_page(cx),
+                            Page::About => self.about_page(window, cx),
                         }),
                 );
             div()
