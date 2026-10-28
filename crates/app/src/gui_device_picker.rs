@@ -5,13 +5,13 @@ use bluetooth::{DeviceId, TransportKind};
 use ezsc_core::ConnectionState;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Selectable,
-    button::{Button, ButtonVariants},
+    button::{Button, ButtonCustomVariant, ButtonVariants},
     popover::Popover,
 };
 use gpui_kit::{assets::IconName, prelude::*, *};
 
 pub(super) const SIDEBAR_WIDTH: f32 = 228.;
-pub(super) const SIDEBAR_PADDING: f32 = 16.;
+pub(super) const SIDEBAR_PADDING: f32 = 14.;
 // The sidebar's one-pixel right border is inside its width.
 const PICKER_WIDTH: f32 = SIDEBAR_WIDTH - SIDEBAR_PADDING * 2. - 1.;
 
@@ -37,7 +37,7 @@ impl Desktop {
             .w_full()
             .h(px(64.))
             .p_0()
-            .rounded(px(12.))
+            .rounded(px(14.))
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().group_box)
@@ -89,14 +89,14 @@ fn card(
     div()
         .flex()
         .items_center()
-        .gap_2()
-        .p_2()
+        .gap(px(12.))
+        .p(px(9.))
         .w_full()
         .min_w_0()
         .child(
             img(gui_product_images::source(model, None, cx))
                 .object_fit(ObjectFit::Contain)
-                .size(px(40.))
+                .size(px(32.))
                 .flex_shrink_0(),
         )
         .child(
@@ -109,7 +109,7 @@ fn card(
                 .child(
                     div()
                         .text_size(px(13.))
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_weight(FontWeight::BOLD)
                         .text_color(cx.theme().foreground)
                         .truncate()
                         .child(name),
@@ -178,25 +178,27 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
     let blocked = state.settings_unavailable() || (!state.preview && state.manager.is_none());
     let adding = state.adding_device;
     let mut content = div().flex().flex_col().gap_2().w_full().min_w_0();
-    content = content.child(
-        div()
-            .px_2()
-            .py_1()
-            .text_size(px(12.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(language.text(
-                if adding {
-                    "Add headphones"
-                } else {
-                    "Your headphones"
-                },
-                if adding {
-                    "添加耳机"
-                } else {
-                    "我的耳机"
-                },
-            )),
-    );
+    content = content.when(adding, |content| {
+        content.child(
+            div()
+                .px_2()
+                .py_1()
+                .text_size(px(12.))
+                .font_weight(FontWeight::BOLD)
+                .child(language.text(
+                    if adding {
+                        "Add headphones"
+                    } else {
+                        "Your headphones"
+                    },
+                    if adding {
+                        "添加耳机"
+                    } else {
+                        "我的耳机"
+                    },
+                )),
+        )
+    });
     let mut list = div()
         .id("saved-device-list")
         .flex()
@@ -328,7 +330,16 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
             let name = device.display_name().to_owned();
             list = list.child(
                 Button::new(("saved-headset", index))
-                    .ghost()
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(if selected {
+                                cx.theme().sidebar_accent
+                            } else {
+                                cx.theme().transparent
+                            })
+                            .hover(cx.theme().sidebar_accent)
+                            .active(cx.theme().sidebar_accent),
+                    )
                     .selected(selected)
                     .h(px(64.))
                     .p_0()

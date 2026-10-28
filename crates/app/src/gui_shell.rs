@@ -27,6 +27,8 @@ pub(super) struct Shell {
     preview_tray: bool,
     last_prompt: Option<ezsc_core::PromptId>,
     last_connection: Option<ezsc_core::ConnectionState>,
+    #[cfg(target_os = "linux")]
+    font_warning_pending: bool,
 }
 impl Global for Shell {}
 gpui_kit::assets::icon_assets!(
@@ -43,6 +45,13 @@ gpui_kit::assets::icon_assets!(
         Plus,
         TriangleAlert,
         CircleAlert,
+        AudioLines,
+        Ear,
+        Power,
+        Battery,
+        BatteryCharging,
+        BatteryLow,
+        Copy,
         X
     ]
 );
@@ -248,6 +257,8 @@ pub(super) fn run() {
             preview_tray,
             last_prompt: None,
             last_connection: None,
+            #[cfg(target_os = "linux")]
+            font_warning_pending: gui_theme::source_han_sans(cx).is_none(),
         });
         // Native menu hosts observe the same state as GPUI windows, including
         // pending operations, unsolicited headset updates and prompt gating.
@@ -316,6 +327,7 @@ fn show_main(cx: &mut App) {
             .is_ok()
     {
         cx.activate(true);
+        show_font_warning(cx);
         return;
     }
     let session = cx.global::<Shell>().session.clone();
@@ -352,6 +364,7 @@ fn show_main(cx: &mut App) {
                 }
             });
             cx.activate(true);
+            show_font_warning(cx);
         }
         Err(error) => {
             eprintln!("Unable to open main window: {error}");
@@ -361,6 +374,45 @@ fn show_main(cx: &mut App) {
         }
     }
 }
+
+fn show_font_warning(_cx: &mut App) {
+    #[cfg(target_os = "linux")]
+    {
+        use gpui_kit::{
+            assets::IconName,
+            component::{ActiveTheme, Icon, WindowExt},
+        };
+
+        let cx = _cx;
+        let shell = cx.global::<Shell>();
+        // A background launch waits until the user actually opens the window.
+        if !shell.font_warning_pending || shell.background_requested {
+            return;
+        }
+        let Some(main) = shell.main else {
+            return;
+        };
+        let language = shell.session.read(cx).preferences.language;
+        let _ = main.update(cx, |_, window, cx| {
+            cx.global_mut::<Shell>().font_warning_pending = false;
+            window.open_alert_dialog(cx, move |alert, _, cx| {
+                alert
+                    .icon(
+                        Icon::new(IconName::TriangleAlert)
+                            .size(px(28.))
+                            .text_color(cx.theme().warning),
+                    )
+                    .title(language.text("Source Han Sans unavailable", "思源黑体不可用"))
+                    .description(language.text(
+                        "Using the existing font fallback. Chinese text and bold weights may appear inconsistent. Install static Source Han Sans fonts (Regular, Medium and Bold), then restart the app.",
+                        "已使用备用字体，中文与粗体显示可能不一致。请安装思源黑体静态字体（Regular、Medium 和 Bold），然后重启应用。",
+                    ))
+                    .ok_text(language.text("OK", "知道了"))
+            });
+        });
+    }
+}
+
 fn open_panel(anchor: Option<ScreenPoint>, cx: &mut App) {
     cx.global_mut::<Shell>().background_requested = false;
     if let Some(handle) = cx.global_mut::<Shell>().panel.take() {
@@ -518,6 +570,7 @@ fn handle_event(event: DesktopEvent, cx: &mut App) {
                 if cx.global::<Shell>().main.is_none() {
                     open_main(cx);
                 }
+                show_font_warning(cx);
             } else if cx.global::<Shell>().background_requested {
                 let main = cx.global_mut::<Shell>().main.take();
                 cx.global_mut::<Shell>().background_requested = false;
@@ -559,6 +612,7 @@ pub(super) fn refresh_tray(cx: &mut App) {
         if cx.global::<Shell>().main.is_none() {
             open_main(cx);
         }
+        show_font_warning(cx);
         return;
     }
     let previous_error = cx.global::<Shell>().tray_error.clone();
@@ -580,6 +634,7 @@ pub(super) fn refresh_tray(cx: &mut App) {
         if cx.global::<Shell>().main.is_none() {
             open_main(cx);
         }
+        show_font_warning(cx);
     }
 }
 

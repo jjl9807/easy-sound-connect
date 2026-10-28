@@ -12,23 +12,27 @@ use ezsc_core::{
     audio::AudioKind,
     equalizer::{BandInformation, EqualizerKind, Preset, PresetId},
     noise::{
-        AdaptiveSensitivity, AmbientMode, NoiseAvailability, NoiseKind, NoiseMode, NoiseParameters,
-        NoiseSettings, NoiseSwitch,
+        AdaptiveSensitivity, AmbientMode, NcValue, NoiseAvailability, NoiseKind, NoiseMode,
+        NoiseParameters, NoiseSettings, NoiseSwitch,
     },
     system::SystemKind,
 };
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Selectable, Sizable,
+    ActiveTheme, Disableable, Icon,
     button::Button,
     menu::{DropdownMenu, PopupMenuItem},
     slider::{Slider, SliderEvent, SliderState},
     switch::Switch,
 };
 use gpui_kit::{
-    App, Context, Div, ElementId, Entity, FocusHandle, SharedString, Subscription, Window, div,
-    prelude::*, px,
+    App, Context, Div, ElementId, Entity, FocusHandle, SharedString, Subscription, Window,
+    assets::IconName, div, prelude::*, px,
 };
 use std::collections::{HashMap, VecDeque};
+
+const EQ_BAND_MIN_WIDTH: f32 = 44.;
+const EQ_BAND_GAP: f32 = 4.;
+const EQ_TRACK_HEIGHT: f32 = 180.;
 
 pub(super) async fn refresh_controls(handle: &DeviceHandle) -> Result<(), String> {
     let snapshot = handle.snapshot();
@@ -374,6 +378,7 @@ impl Desktop {
         values: Vec<u8>,
         current: u8,
         enabled: bool,
+        vertical: bool,
         action: impl Fn(u8) -> ControlAction + Clone + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -509,8 +514,14 @@ impl Desktop {
             .id(SharedString::from(key))
             .flex()
             .flex_col()
-            .gap_2()
-            .w_full()
+            .gap(px(8.))
+            .when(vertical, |this| {
+                this.flex_1()
+                    .min_w(px(EQ_BAND_MIN_WIDTH))
+                    .h(px(230.))
+                    .items_center()
+            })
+            .when(!vertical, |this| this.w_full())
             .track_focus(&focus)
             .tab_stop(enabled)
             .on_key_down(move |event, window, cx| {
@@ -543,21 +554,54 @@ impl Desktop {
                 }
                 cx.stop_propagation();
             })
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .gap_2()
-                    .text_sm()
-                    .child(label.clone())
-                    .child(format!("{draft}")),
-            )
+            .when(vertical, |this| {
+                this.child(
+                    div()
+                        .h(px(16.))
+                        .text_size(px(11.))
+                        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                        .child(format!("{draft}")),
+                )
+            })
+            .when(!vertical, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .gap(px(8.))
+                        .text_size(px(12.))
+                        .child(
+                            div()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(label.clone()),
+                        )
+                        .child(
+                            div()
+                                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                                .child(format!("{draft}")),
+                        ),
+                )
+            })
             .child(
                 Slider::new(&state)
                     .disabled(!enabled)
-                    .accessibility_label(label)
-                    .w_full(),
+                    .accessibility_label(label.clone())
+                    .when(vertical, |slider| {
+                        slider.vertical().h(px(EQ_TRACK_HEIGHT)).w(px(28.))
+                    })
+                    .when(!vertical, |slider| slider.w_full()),
             )
+            .when(vertical, |this| {
+                this.child(
+                    div()
+                        .h(px(18.))
+                        .text_size(px(10.5))
+                        .text_color(cx.theme().muted_foreground)
+                        .text_center()
+                        .whitespace_nowrap()
+                        .child(label),
+                )
+            })
     }
 
     pub(super) fn render_noise_controls(
@@ -571,7 +615,7 @@ impl Desktop {
             state.snapshot.clone(),
             state.settings_unavailable() || state.preview,
         );
-        let mut cards = div().flex().flex_col().gap_4();
+        let mut cards = div().flex().flex_col().gap(px(16.));
         let Some(snapshot) = snapshot else {
             return cards;
         };
@@ -588,7 +632,7 @@ impl Desktop {
             let enabled = editable && noise_ready(entry);
             let kind = entry.kind;
             let mut section =
-                card(language.text("Noise control", "降噪与环境声"), cx).child(availability(
+                card(language.text("Noise control", "降噪与环境声"), cx).children(availability(
                     ready,
                     self.session
                         .read(cx)
@@ -612,7 +656,13 @@ impl Desktop {
             };
             let presentation = NoisePresentation::from_settings(settings);
             let effect_on = effect == NoiseSwitch::On;
-            let mut modes = div().flex().flex_wrap().gap_2();
+            let ambient_active = presentation.ambient_active(effect);
+            let mut modes = div()
+                .flex()
+                .w_full()
+                .justify_between()
+                .gap(px(8.))
+                .py(px(8.));
             if let Some(mode) = presentation.mode {
                 for (slot, choice, label) in [
                     (
@@ -626,13 +676,19 @@ impl Desktop {
                         language.text("Ambient sound", "环境声"),
                     ),
                 ] {
-                    modes = modes.child(control_button(
+                    modes = modes.child(mode_control(
                         ("noise-mode", index * 3 + slot),
                         label,
+                        if choice == NoiseMode::NoiseCancelling {
+                            IconName::AudioLines
+                        } else {
+                            IconName::Ear
+                        },
                         enabled,
                         effect_on && mode == choice,
                         ControlAction::Noise(kind, NoiseChange::Mode(choice)),
                         self.session.clone(),
+                        cx,
                     ));
                 }
             } else {
@@ -646,27 +702,38 @@ impl Desktop {
                 } else {
                     NoiseChange::Effect(true)
                 };
-                modes = modes.child(control_button(
+                modes = modes.child(mode_control(
                     ("noise-effect-on", index),
                     label,
+                    IconName::AudioLines,
                     enabled,
                     effect_on
                         && (!matches!(settings, NoiseSettings::NcOnly { .. })
                             || presentation.nc_on),
                     ControlAction::Noise(kind, action),
                     self.session.clone(),
+                    cx,
                 ));
             }
-            modes = modes.child(control_button(
+            modes = modes.child(mode_control(
                 ("noise-off", index),
                 language.text("Off", "关闭"),
+                IconName::Power,
                 enabled,
                 !effect_on,
                 ControlAction::Noise(kind, NoiseChange::Effect(false)),
                 self.session.clone(),
+                cx,
             ));
             section = section.child(modes);
-            if let Some(ambient_mode) = presentation.ambient_mode {
+            if ambient_active && let Some(ambient_mode) = presentation.ambient_mode {
+                let mut ambient = div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .p(px(14.))
+                    .rounded(px(14.))
+                    .bg(cx.theme().secondary.opacity(0.45));
                 if let Some(level) = presentation.level {
                     if let Some(range) =
                         unique_ambient(entry, ambient_mode).and_then(|capability| capability.levels)
@@ -674,12 +741,13 @@ impl Desktop {
                         let values = (range.minimum()..=range.maximum())
                             .filter(|value| range.contains(*value))
                             .collect();
-                        section = section.child(self.control_slider(
+                        ambient = ambient.child(self.control_slider(
                             format!("ambient-{kind:?}-{ambient_mode:?}"),
                             language.text("Ambient sound level", "环境声等级").into(),
                             values,
                             level,
                             slider_editable && noise_ready(entry),
+                            false,
                             move |value| {
                                 ControlAction::Noise(kind, NoiseChange::AmbientLevel(value))
                             },
@@ -687,7 +755,7 @@ impl Desktop {
                             cx,
                         ));
                     } else {
-                        section = section.child(note(
+                        ambient = ambient.child(note(
                             format!(
                                 "{}: {level}",
                                 language.text("Ambient sound level", "环境声等级")
@@ -713,9 +781,10 @@ impl Desktop {
                         });
                     let session = self.session.clone();
                     let label = language.text("Voice focus", "语音聚焦");
-                    section = section.child(
+                    ambient = ambient.child(crate::gui_style::setting_row(
+                        label,
                         Switch::new(("noise-voice", index))
-                            .label(label)
+                            .accessibility_label(label)
                             .checked(focus)
                             .disabled(!can_focus)
                             .on_change(move |value, _, cx| {
@@ -727,35 +796,37 @@ impl Desktop {
                                     cx.notify();
                                 })
                             }),
-                    );
+                        cx,
+                    ));
                 }
+                section = section.child(ambient);
             }
-            if !self.compact
+            if ambient_active
+                && !self.compact
                 && let Some((adaptive, sensitivity)) = noise_adaptation(entry)
             {
                 let session = self.session.clone();
                 let label = language.text("Automatic adjustment", "自动调节");
-                section = section.child(
-                    Switch::new(("noise-adaptive", index))
-                        .label(label)
-                        .checked(adaptive == NoiseSwitch::On)
-                        .disabled(!enabled)
-                        .on_change(move |value, _, cx| {
-                            session.update(cx, |session, cx| {
-                                session.submit_control(
-                                    ControlAction::Noise(kind, NoiseChange::Adaptive(*value)),
-                                    label.into(),
-                                );
-                                cx.notify();
-                            })
-                        }),
+                section = section.child(crate::gui_style::divider(cx)).child(
+                    crate::gui_style::setting_row(
+                        label,
+                        Switch::new(("noise-adaptive", index))
+                            .accessibility_label(label)
+                            .checked(adaptive == NoiseSwitch::On)
+                            .disabled(!enabled)
+                            .on_change(move |value, _, cx| {
+                                session.update(cx, |session, cx| {
+                                    session.submit_control(
+                                        ControlAction::Noise(kind, NoiseChange::Adaptive(*value)),
+                                        label.into(),
+                                    );
+                                    cx.notify();
+                                })
+                            }),
+                        cx,
+                    ),
                 );
-                let mut choices = div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .child(language.text("Sensitivity", "灵敏度"));
+                let mut choices = div().flex().flex_wrap().items_center().gap(px(8.));
                 for (slot, choice, label) in [
                     (0, AdaptiveSensitivity::Low, language.text("Low", "低")),
                     (
@@ -772,9 +843,14 @@ impl Desktop {
                         sensitivity == choice,
                         ControlAction::Noise(kind, NoiseChange::AdaptiveSensitivity(choice)),
                         self.session.clone(),
+                        cx,
                     ));
                 }
-                section = section.child(choices);
+                section = section.child(crate::gui_style::setting_row(
+                    language.text("Sensitivity", "灵敏度"),
+                    choices,
+                    cx,
+                ));
             }
             cards = cards.child(section);
         }
@@ -792,7 +868,7 @@ impl Desktop {
             state.snapshot.clone(),
             state.settings_unavailable() || state.preview,
         );
-        let mut cards = div().flex().flex_col().gap_4();
+        let mut cards = div().flex().flex_col().gap(px(16.));
         let Some(snapshot) = snapshot else {
             return cards;
         };
@@ -804,19 +880,20 @@ impl Desktop {
             && self.session.read(cx).replying_to.is_none();
         for (index, entry) in snapshot.equalizers.iter().enumerate() {
             let enabled = editable && equalizer_ready(entry);
-            let mut section = card(language.text("Equalizer", "均衡器"), cx).child(availability(
-                ready,
-                self.session
-                    .read(cx)
-                    .operation_feedback_visible(OperationTarget::Equalizer(entry.kind)),
-                entry.freshness,
-                entry
-                    .status
-                    .as_ref()
-                    .is_some_and(|status| status.enabled && status.errors.is_empty()),
-                language,
-                cx,
-            ));
+            let mut section =
+                card(language.text("Equalizer", "均衡器"), cx).children(availability(
+                    ready,
+                    self.session
+                        .read(cx)
+                        .operation_feedback_visible(OperationTarget::Equalizer(entry.kind)),
+                    entry.freshness,
+                    entry
+                        .status
+                        .as_ref()
+                        .is_some_and(|status| status.enabled && status.errors.is_empty()),
+                    language,
+                    cx,
+                ));
             let (Some(capability), Some(parameters)) = (&entry.capability, &entry.parameters)
             else {
                 cards = cards.child(section.child(note(
@@ -869,7 +946,7 @@ impl Desktop {
                 cards = cards.child(section.child(dropdown));
                 continue;
             }
-            let mut presets = div().flex().flex_wrap().gap_2();
+            let mut presets = div().flex().flex_wrap().gap(px(8.));
             for (slot, item) in capability.presets().iter().enumerate() {
                 let label = localized_preset(item, language);
                 presets = presets.child(control_button(
@@ -879,6 +956,7 @@ impl Desktop {
                     preset == Some(item.id),
                     ControlAction::Preset(kind, item.id),
                     self.session.clone(),
+                    cx,
                 ));
             }
             section = section.child(presets);
@@ -897,13 +975,6 @@ impl Desktop {
                     || preset.is_some_and(|value| {
                         value.is_custom_slot() && capability.supports_preset(value)
                     }));
-            if valid_shape {
-                section = section.child(equalizer_curve(
-                    parameters.levels().to_vec(),
-                    capability.level_steps(),
-                    cx,
-                ));
-            }
             if enabled && kind != EqualizerKind::PresetNonCustomizable && !can_edit {
                 section = section.child(note(
                     if valid_shape {
@@ -920,6 +991,16 @@ impl Desktop {
                     cx,
                 ));
             }
+            let band_count = parameters.levels().len();
+            let minimum_width = EQ_BAND_MIN_WIDTH * band_count as f32
+                + EQ_BAND_GAP * band_count.saturating_sub(1) as f32;
+            let mut bands = div()
+                .relative()
+                .flex()
+                .w_full()
+                .gap(px(EQ_BAND_GAP))
+                .py(px(8.));
+            let mut curve_levels = parameters.levels().to_vec();
             for (band, level) in parameters.levels().iter().copied().enumerate() {
                 let label = if entry.band_info.is_some() {
                     curve_band_label(
@@ -930,12 +1011,14 @@ impl Desktop {
                 } else {
                     format!("{} {}", language.text("Band", "频段"), band + 1)
                 };
-                section = section.child(self.control_slider(
-                    format!("eq-{kind:?}-{preset:?}-{band}"),
+                let key = format!("eq-{kind:?}-{preset:?}-{band}");
+                bands = bands.child(self.control_slider(
+                    key.clone(),
                     label,
                     (0..capability.level_steps()).collect(),
                     level,
                     can_edit,
+                    true,
                     move |value| ControlAction::Band {
                         kind,
                         preset,
@@ -945,14 +1028,36 @@ impl Desktop {
                     window,
                     cx,
                 ));
+                if let Some(widget) = self.controls.sliders.get(&key) {
+                    curve_levels[band] = widget
+                        .values
+                        .get(widget.state.read(cx).value().end().round().max(0.) as usize)
+                        .copied()
+                        .unwrap_or(level);
+                }
             }
-            section = section.child(note(
-                language.text(
-                    "Values use the headset's native steps.",
-                    "数值使用耳机原生档位。",
-                ),
-                cx,
-            ));
+            let chart = div()
+                .relative()
+                .w_full()
+                .min_w(px(minimum_width))
+                .when(valid_shape, |this| {
+                    this.child(
+                        equalizer_curve(curve_levels, capability.level_steps(), cx)
+                            .absolute()
+                            .top(px(32.))
+                            .left_0()
+                            .right_0()
+                            .h(px(EQ_TRACK_HEIGHT)),
+                    )
+                })
+                .child(bands);
+            section = section.child(
+                div()
+                    .id(("eq-bands", index))
+                    .w_full()
+                    .overflow_x_scroll()
+                    .child(chart),
+            );
             if entry.band_info.is_none() {
                 section = section.child(control_button(
                     ("eq-labels", index),
@@ -961,6 +1066,7 @@ impl Desktop {
                     false,
                     ControlAction::BandInfo(kind),
                     self.session.clone(),
+                    cx,
                 ));
             }
             cards = cards.child(section);
@@ -978,8 +1084,14 @@ fn equalizer_curve(levels: Vec<u8>, steps: u8, cx: &App) -> Div {
             move |bounds, _, window, _| {
                 let width = bounds.size.width;
                 let height = bounds.size.height;
+                // Component 0.8.1 positions a 1rem thumb with left -5px and
+                // bottom margin -8px on its 0.375rem-wide vertical track.
+                // Keep the curve on the rendered thumb centres at any rem size.
+                let rem = window.rem_size();
+                let thumb_x = rem * 0.3125 - px(5.);
+                let thumb_y = px(8.) - rem * 0.5;
                 for row in 0..=4 {
-                    let y = bounds.origin.y + height * (row as f32 / 4.);
+                    let y = bounds.origin.y + thumb_y + height * (row as f32 / 4.);
                     let mut line = gpui_kit::PathBuilder::stroke(px(1.));
                     line.move_to(gpui_kit::point(bounds.origin.x, y));
                     line.line_to(gpui_kit::point(bounds.origin.x + width, y));
@@ -990,11 +1102,18 @@ fn equalizer_curve(levels: Vec<u8>, steps: u8, cx: &App) -> Div {
                 if levels.len() < 2 || steps < 2 {
                     return;
                 }
+                let gap = px(EQ_BAND_GAP);
+                let column_width = (width - gap * (levels.len() - 1) as f32) / levels.len() as f32;
                 let mut curve = gpui_kit::PathBuilder::stroke(px(2.));
                 for (index, value) in levels.iter().enumerate() {
                     let point = gpui_kit::point(
-                        bounds.origin.x + width * (index as f32 / (levels.len() - 1) as f32),
-                        bounds.origin.y + height * (1. - f32::from(*value) / f32::from(steps - 1)),
+                        bounds.origin.x
+                            + column_width * (index as f32 + 0.5)
+                            + gap * index as f32
+                            + thumb_x,
+                        bounds.origin.y
+                            + thumb_y
+                            + height * (1. - f32::from(*value) / f32::from(steps - 1)),
                     );
                     if index == 0 {
                         curve.move_to(point);
@@ -1018,14 +1137,93 @@ pub(super) fn control_button(
     selected: bool,
     action: ControlAction,
     session: Entity<Session>,
+    cx: &App,
 ) -> Button {
     let label = label.into();
-    action_button(id, label.clone(), enabled, selected).on_click(move |_, _, cx| {
+    crate::gui_style::chip(id, label.clone(), selected, enabled, cx).on_click(move |_, _, cx| {
         session.update(cx, |session, cx| {
             session.submit_control(action, label.to_string());
             cx.notify();
         });
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mode_control(
+    id: impl Into<ElementId>,
+    label: &'static str,
+    icon: IconName,
+    enabled: bool,
+    selected: bool,
+    action: ControlAction,
+    session: Entity<Session>,
+    cx: &App,
+) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(10.))
+        .child(
+            crate::gui_style::chip(id, "", selected, enabled, cx)
+                .child(Icon::new(icon).size(px(21.)))
+                .accessibility_label(label)
+                .w(px(58.))
+                .h(px(58.))
+                .p_0()
+                .rounded(px(29.))
+                .when(selected && enabled, |button| {
+                    let highlight: gpui_kit::Hsla = gpui_kit::rgb(if cx.theme().is_dark() {
+                        0xc6c6fc
+                    } else {
+                        0x837bd0
+                    })
+                    .into();
+                    button
+                        .bg(gpui_kit::linear_gradient(
+                            180.,
+                            gpui_kit::linear_color_stop(highlight, 0.),
+                            gpui_kit::linear_color_stop(cx.theme().primary, 1.),
+                        ))
+                        .border_1()
+                        .border_color(highlight.opacity(0.25))
+                        .shadow(vec![gpui_kit::BoxShadow {
+                            color: cx.theme().primary.opacity(0.22),
+                            offset: gpui_kit::point(px(0.), px(3.)),
+                            blur_radius: px(12.),
+                            spread_radius: px(0.),
+                            inset: false,
+                        }])
+                })
+                .on_click(move |_, _, cx| {
+                    session.update(cx, |session, cx| {
+                        session.submit_control(action, label.into());
+                        cx.notify();
+                    });
+                }),
+        )
+        .child(
+            div()
+                .text_size(px(12.))
+                .font_weight(if selected {
+                    gpui_kit::FontWeight::SEMIBOLD
+                } else {
+                    gpui_kit::FontWeight::MEDIUM
+                })
+                .text_color(if !enabled {
+                    cx.theme().muted_foreground.opacity(0.6)
+                } else if selected {
+                    cx.theme().foreground
+                } else {
+                    cx.theme().muted_foreground
+                })
+                .h(px(32.))
+                .w_full()
+                .text_center()
+                .child(label),
+        )
 }
 
 fn localized_preset(preset: &Preset, language: Language) -> String {
@@ -1154,22 +1352,7 @@ fn band_label(index: usize, info: BandInformation) -> String {
     }
 }
 pub(super) fn card(title: impl Into<SharedString>, cx: &App) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .flex_shrink_0()
-        .gap_3()
-        .p(px(20.))
-        .rounded(px(20.))
-        .bg(cx.theme().background)
-        .border_1()
-        .border_color(cx.theme().border)
-        .child(
-            div()
-                .text_size(px(15.))
-                .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                .child(title.into()),
-        )
+    crate::gui_style::card(title, cx)
 }
 pub(super) fn note(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
@@ -1184,48 +1367,42 @@ pub(super) fn availability(
     available: bool,
     language: Language,
     cx: &App,
-) -> Div {
-    note(
-        if !ready {
-            language.text(
-                "Connect your headset to use this control.",
-                "连接耳机后可使用此功能。",
-            )
-        } else if freshness != Freshness::Current {
-            language.text("Refresh state before editing.", "请刷新状态后再编辑。")
-        } else if !available {
-            language.text(
-                "Temporarily unavailable on the headset.",
-                "耳机当前暂不可用。",
-            )
-        } else if waiting {
-            language.text("Waiting for the headset…", "正在等待耳机响应…")
-        } else {
-            language.text("Synced with your headset", "已与耳机同步")
-        },
-        cx,
-    )
-}
-pub(super) fn action_button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    enabled: bool,
-    active: bool,
-) -> Button {
-    Button::new(id)
-        .label(label)
-        .small()
-        .selected(active)
-        .disabled(!enabled)
+) -> Option<Div> {
+    let message = if !ready {
+        language.text(
+            "Connect your headset to use this control.",
+            "连接耳机后可使用此功能。",
+        )
+    } else if freshness != Freshness::Current {
+        language.text("Refresh state before editing.", "请刷新状态后再编辑。")
+    } else if !available {
+        language.text("Unavailable in the current mode.", "当前模式下不可用。")
+    } else if waiting {
+        return Some(
+            note(language.text("Waiting…", "等待中…"), cx)
+                .absolute()
+                .top(px(22.))
+                .right(px(20.))
+                .text_size(px(11.)),
+        );
+    } else {
+        return None;
+    };
+    Some(note(message, cx))
 }
 
 struct NoisePresentation {
     mode: Option<NoiseMode>,
     nc_on: bool,
+    ambient_on: bool,
     ambient_mode: Option<AmbientMode>,
     level: Option<u8>,
 }
 impl NoisePresentation {
+    fn ambient_active(&self, effect: NoiseSwitch) -> bool {
+        effect == NoiseSwitch::On && self.ambient_on
+    }
+
     fn from_settings(settings: NoiseSettings) -> Self {
         match settings {
             NoiseSettings::AutoNcAndAmbientLevel {
@@ -1253,43 +1430,65 @@ impl NoisePresentation {
             } => Self {
                 mode: Some(mode),
                 nc_on: mode == NoiseMode::NoiseCancelling,
+                ambient_on: mode == NoiseMode::AmbientSound,
                 ambient_mode: Some(ambient_mode),
                 level: Some(level),
             },
             NoiseSettings::NcAndAmbientLevel {
-                ambient_mode,
-                level,
-                ..
-            }
-            | NoiseSettings::NcModesAndAmbientLevel {
-                ambient_mode,
-                level,
-                ..
-            }
-            | NoiseSettings::AmbientLevel {
+                nc,
                 ambient_mode,
                 level,
             } => Self {
                 mode: None,
                 nc_on: false,
+                // These layouts use zero as an inactive ambient level while NC is on.
+                ambient_on: nc == NoiseSwitch::Off || level > 0,
                 ambient_mode: Some(ambient_mode),
                 level: Some(level),
             },
-            NoiseSettings::NcModesAndAmbientSwitch { ambient_mode, .. } => Self {
+            NoiseSettings::NcModesAndAmbientLevel {
+                nc,
+                ambient_mode,
+                level,
+            } => Self {
                 mode: None,
                 nc_on: false,
+                ambient_on: nc == NcValue::Off || level > 0,
+                ambient_mode: Some(ambient_mode),
+                level: Some(level),
+            },
+            NoiseSettings::AmbientLevel {
+                ambient_mode,
+                level,
+            } => Self {
+                mode: None,
+                nc_on: false,
+                ambient_on: true,
+                ambient_mode: Some(ambient_mode),
+                level: Some(level),
+            },
+            NoiseSettings::NcModesAndAmbientSwitch {
+                ambient_mode,
+                ambient,
+                ..
+            } => Self {
+                mode: None,
+                nc_on: false,
+                ambient_on: ambient == NoiseSwitch::On,
                 ambient_mode: Some(ambient_mode),
                 level: None,
             },
             NoiseSettings::NcOnly { nc } => Self {
                 mode: None,
                 nc_on: nc == NoiseSwitch::On,
+                ambient_on: false,
                 ambient_mode: None,
                 level: None,
             },
             _ => Self {
                 mode: None,
                 nc_on: false,
+                ambient_on: false,
                 ambient_mode: None,
                 level: None,
             },
@@ -1327,10 +1526,86 @@ mod tests {
     }
 
     #[test]
+    fn ambient_details_require_active_processing_not_retained_parameters() {
+        let check = |settings, active| {
+            let presentation = NoisePresentation::from_settings(settings);
+            assert_eq!(presentation.ambient_active(NoiseSwitch::On), active);
+            assert!(!presentation.ambient_active(NoiseSwitch::Off));
+        };
+        for mode in [NoiseMode::NoiseCancelling, NoiseMode::AmbientSound] {
+            check(
+                NoiseSettings::AdaptiveNcAndAmbientLevel {
+                    mode,
+                    ambient_mode: AmbientMode::Voice,
+                    level: 7,
+                    adaptive: NoiseSwitch::On,
+                    sensitivity: AdaptiveSensitivity::High,
+                },
+                mode == NoiseMode::AmbientSound,
+            );
+        }
+        for ambient in [NoiseSwitch::Off, NoiseSwitch::On] {
+            check(
+                NoiseSettings::NcModesAndAmbientSwitch {
+                    nc: NcValue::Off,
+                    ambient_mode: AmbientMode::Voice,
+                    ambient,
+                },
+                ambient == NoiseSwitch::On,
+            );
+        }
+        for level in [0, 7] {
+            check(
+                NoiseSettings::NcAndAmbientLevel {
+                    nc: NoiseSwitch::On,
+                    ambient_mode: AmbientMode::Normal,
+                    level,
+                },
+                level > 0,
+            );
+            for nc in [NcValue::Single, NcValue::Dual] {
+                check(
+                    NoiseSettings::NcModesAndAmbientLevel {
+                        nc,
+                        ambient_mode: AmbientMode::Normal,
+                        level,
+                    },
+                    level > 0,
+                );
+            }
+        }
+        // Zero can be a real capability minimum when no NC mode is active.
+        for settings in [
+            NoiseSettings::NcAndAmbientLevel {
+                nc: NoiseSwitch::Off,
+                ambient_mode: AmbientMode::Normal,
+                level: 0,
+            },
+            NoiseSettings::NcModesAndAmbientLevel {
+                nc: NcValue::Off,
+                ambient_mode: AmbientMode::Normal,
+                level: 0,
+            },
+            NoiseSettings::AmbientLevel {
+                ambient_mode: AmbientMode::Normal,
+                level: 0,
+            },
+        ] {
+            check(settings, true);
+        }
+        check(
+            NoiseSettings::NcOnly {
+                nc: NoiseSwitch::On,
+            },
+            false,
+        );
+    }
+
+    #[test]
     fn adaptation_controls_require_matching_capability_and_parameters() {
         let state = adaptive_state();
-        // Stored sensitivity is available even with adaptation and effects off;
-        // no model identity or selected sound mode is needed to expose it.
+        // Stored sensitivity remains readable with adaptation and effects off;
+        // the presentation decides whether these details should be visible.
         assert!(noise_ready(&state));
         assert_eq!(
             noise_adaptation(&state),
@@ -1372,7 +1647,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptation_values_remain_visible_when_editing_is_unavailable() {
+    fn adaptation_values_remain_readable_when_editing_is_unavailable() {
         let state = adaptive_state();
         let expected = noise_adaptation(&state);
         for freshness in [Freshness::Unknown, Freshness::Stale] {

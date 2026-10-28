@@ -11,14 +11,14 @@ use ezsc_core::{
     system::{DetectionSensitivity, ModeOutTime, SpeakToChatSettings, SystemKind},
 };
 use gpui_kit::component::{Disableable, switch::Switch};
-use gpui_kit::{Context, Div, div, prelude::*};
+use gpui_kit::{Context, Div, div, prelude::*, px};
 
 impl Desktop {
     pub(super) fn render_daily_controls(&self, cx: &mut Context<Self>) -> Div {
         div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap(px(16.))
             .child(self.render_audio_controls(cx))
             .child(self.render_speak_controls(cx))
     }
@@ -30,7 +30,7 @@ impl Desktop {
             state.snapshot.clone(),
             state.settings_unavailable() || state.preview,
         );
-        let mut cards = div().flex().flex_col().gap_4();
+        let mut cards = div().flex().flex_col().gap(px(16.));
         let Some(snapshot) = snapshot else {
             return cards;
         };
@@ -48,16 +48,32 @@ impl Desktop {
                 }
                 _ => continue,
             };
-            let mut section = card(title, cx).child(availability(
-                ready,
-                self.session
-                    .read(cx)
-                    .operation_feedback_visible(OperationTarget::Audio(entry.kind)),
-                entry.freshness,
-                entry.status.as_ref().is_some_and(|status| status.enabled),
-                language,
-                cx,
-            ));
+            let dsee = matches!(entry.kind, AudioKind::Dsee | AudioKind::DseeWithReasons);
+            let mut section = (if dsee
+                && matches!(
+                    entry
+                        .parameters
+                        .as_ref()
+                        .map(|parameters| parameters.value()),
+                    Some(AudioParameterValue::Dsee(_))
+                ) {
+                crate::gui_style::surface(cx)
+            } else {
+                card(title, cx)
+            })
+            .children(
+                availability(
+                    ready,
+                    self.session
+                        .read(cx)
+                        .operation_feedback_visible(OperationTarget::Audio(entry.kind)),
+                    entry.freshness,
+                    entry.status.as_ref().is_some_and(|status| status.enabled),
+                    language,
+                    cx,
+                )
+                .map(|message| message.when(dsee, |message| message.right(px(76.)))),
+            );
             match entry
                 .parameters
                 .as_ref()
@@ -72,9 +88,10 @@ impl Desktop {
                     });
                     let enabled = editable && audio_change_ready(entry, change);
                     let session = self.session.clone();
-                    section = section.child(
+                    section = section.child(crate::gui_style::setting_heading(
+                        "DSEE",
                         Switch::new(("dsee", index))
-                            .label(language.text("Auto", "自动"))
+                            .accessibility_label(language.text("DSEE Auto", "DSEE 自动"))
                             .checked(*current == DseeMode::Auto)
                             .disabled(!enabled)
                             .on_change(move |value, _, cx| {
@@ -93,30 +110,17 @@ impl Desktop {
                                     cx.notify();
                                 })
                             }),
-                    );
-                    if !self.compact {
-                        section = section.child(note(
-                            language.text(
-                                "Allows the headset to use DSEE when applicable.",
-                                "允许耳机在适用时自动使用 DSEE。",
-                            ),
-                            cx,
-                        ));
-                    }
-                }
-                Some(AudioParameterValue::ConnectionPriority { priority, .. }) => {
-                    let current = if *priority == PriorityMode::SOUND_QUALITY {
-                        language.text("Sound quality", "音质优先").into()
-                    } else if *priority == PriorityMode::CONNECTION_QUALITY {
-                        language.text("Stable connection", "稳定连接优先").into()
-                    } else {
-                        priority_label(*priority)
-                    };
-                    section = section.child(note(
-                        format!("{}: {current}", language.text("Current", "当前")),
                         cx,
                     ));
-                    let mut choices = div().flex().flex_wrap().gap_2();
+                }
+                Some(AudioParameterValue::ConnectionPriority { priority, .. }) => {
+                    if !priority_choices(entry)
+                        .iter()
+                        .any(|choice| choice.value == *priority)
+                    {
+                        section = section.child(note(priority_label(*priority), cx));
+                    }
+                    let mut choices = div().flex().flex_wrap().gap(px(8.));
                     for (slot, choice) in priority_choices(entry).into_iter().enumerate() {
                         let change = AudioChange::Priority(choice.value);
                         let label = if choice.value == PriorityMode::SOUND_QUALITY {
@@ -135,6 +139,7 @@ impl Desktop {
                             *priority == choice.value,
                             ControlAction::Audio(entry.kind, change),
                             self.session.clone(),
+                            cx,
                         ));
                     }
                     section = section.child(choices).child(note(
@@ -171,7 +176,7 @@ impl Desktop {
             state.snapshot.clone(),
             state.settings_unavailable() || state.preview,
         );
-        let mut cards = div().flex().flex_col().gap_4();
+        let mut cards = div().flex().flex_col().gap(px(16.));
         let Some(snapshot) = snapshot else {
             return cards;
         };
@@ -189,26 +194,35 @@ impl Desktop {
                 .session
                 .read(cx)
                 .operation_feedback_visible(OperationTarget::System(kind));
-            let mut section = card("Speak-to-Chat", cx).child(availability(
-                ready,
-                waiting,
-                entry.freshness,
-                entry.status.is_some_and(|status| status.enabled),
-                language,
-                cx,
-            ));
-            if let Some(parameters) = entry
+            let parameters = entry
                 .parameters
                 .filter(|parameters| parameters.kind() == kind)
-                && let Some(preview) = parameters.preview()
-            {
+                .and_then(|parameters| parameters.preview().map(|preview| (parameters, preview)));
+            let mut section = (if parameters.is_some() {
+                crate::gui_style::surface(cx)
+            } else {
+                card(language.text("Speak-to-Chat", "智能免摘对话"), cx)
+            })
+            .children(
+                availability(
+                    ready,
+                    waiting,
+                    entry.freshness,
+                    entry.status.is_some_and(|status| status.enabled),
+                    language,
+                    cx,
+                )
+                .map(|message| message.when(waiting, |message| message.right(px(76.)))),
+            );
+            if let Some((parameters, preview)) = parameters {
                 let change = SystemChange::Enabled(!parameters.enabled());
                 let enabled = editable && system_change_ready(entry, change);
                 let session = self.session.clone();
                 let label = language.text("Speak-to-Chat", "智能免摘对话");
-                section = section.child(
+                section = section.child(crate::gui_style::setting_heading(
+                    label,
                     Switch::new(("speak-enabled", index))
-                        .label(label)
+                        .accessibility_label(label)
                         .checked(parameters.enabled())
                         .disabled(!enabled)
                         .on_change(move |value, _, cx| {
@@ -220,7 +234,8 @@ impl Desktop {
                                 cx.notify();
                             })
                         }),
-                );
+                    cx,
+                ));
                 if self.compact {
                     cards = cards.child(section);
                     continue;
@@ -241,18 +256,22 @@ impl Desktop {
                 }
                 if preview_supported || preview {
                     let change = SystemChange::Preview(!preview);
-                    section = section.child(control_button(
-                        ("speak-preview", index),
-                        if preview {
-                            language.text("Stop preview", "停止试听")
-                        } else {
-                            language.text("Preview", "试听")
-                        },
-                        editable && system_change_ready(entry, change),
-                        preview,
-                        ControlAction::System(kind, change),
-                        self.session.clone(),
-                    ));
+                    section = section.child(
+                        control_button(
+                            ("speak-preview", index),
+                            if preview {
+                                language.text("Stop preview", "停止试听")
+                            } else {
+                                language.text("Preview", "试听")
+                            },
+                            editable && system_change_ready(entry, change),
+                            preview,
+                            ControlAction::System(kind, change),
+                            self.session.clone(),
+                            cx,
+                        )
+                        .self_start(),
+                    );
                 }
             } else {
                 section = section.child(note(
@@ -264,19 +283,13 @@ impl Desktop {
                 cards = cards.child(section);
                 continue;
             }
-            let talking = match entry.status.and_then(|status| status.talking) {
-                Some(true) if ready && entry.freshness == Freshness::Current => {
-                    language.text("Conversation effect is active", "对话效果正在生效")
-                }
-                Some(false) if ready && entry.freshness == Freshness::Current => {
-                    language.text("Conversation effect is inactive", "对话效果未生效")
-                }
-                _ => language.text(
-                    "Conversation effect status is unavailable",
-                    "对话效果状态暂不可用",
-                ),
-            };
-            section = section.child(note(talking, cx));
+            if ready
+                && entry.freshness == Freshness::Current
+                && entry.status.and_then(|status| status.talking) == Some(true)
+            {
+                section =
+                    section.child(note(language.text("Conversation detected", "正在对话"), cx));
+            }
             let Some(settings) = entry
                 .extended
                 .filter(|settings| settings.kind() == kind)
@@ -291,20 +304,18 @@ impl Desktop {
                 )));
                 continue;
             };
-            section = section.child(availability(
-                ready,
-                waiting,
-                entry.extended_freshness,
-                entry.status.is_some_and(|status| status.enabled),
-                language,
-                cx,
-            ));
-            let mut sensitivity = div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_2()
-                .child(language.text("Sensitivity", "灵敏度"));
+            if entry.extended_freshness != entry.freshness {
+                section = section.children(availability(
+                    ready,
+                    false,
+                    entry.extended_freshness,
+                    entry.status.is_some_and(|status| status.enabled),
+                    language,
+                    cx,
+                ));
+            }
+            section = section.child(crate::gui_style::divider(cx));
+            let mut sensitivity = div().flex().flex_wrap().items_center().gap(px(8.));
             for (slot, value, label) in [
                 (0, DetectionSensitivity::Auto, language.text("Auto", "自动")),
                 (1, DetectionSensitivity::High, language.text("High", "高")),
@@ -318,17 +329,23 @@ impl Desktop {
                     settings.sensitivity == value,
                     ControlAction::System(kind, change),
                     self.session.clone(),
+                    cx,
                 ));
             }
-            section = section.child(sensitivity);
+            section = section.child(crate::gui_style::setting_row(
+                language.text("Sensitivity", "灵敏度"),
+                sensitivity,
+                cx,
+            ));
             if let Some(voice_focus) = settings.voice_focus {
                 let enabled =
                     editable && system_change_ready(entry, SystemChange::VoiceFocus(!voice_focus));
                 let session = self.session.clone();
                 let label = language.text("Voice focus", "语音聚焦");
-                section = section.child(
+                section = section.child(crate::gui_style::setting_row(
+                    label,
                     Switch::new(("speak-voice", index))
-                        .label(label)
+                        .accessibility_label(label)
                         .checked(voice_focus)
                         .disabled(!enabled)
                         .on_change(move |value, _, cx| {
@@ -340,14 +357,10 @@ impl Desktop {
                                 cx.notify();
                             })
                         }),
-                );
+                    cx,
+                ));
             }
-            let mut end = div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_2()
-                .child(language.text("Automatic end", "自动结束"));
+            let mut end = div().flex().flex_wrap().items_center().gap(px(8.));
             for (slot, value, label) in [
                 (0, ModeOutTime::Fast, language.text("Fast", "短")),
                 (1, ModeOutTime::Mid, language.text("Medium", "中")),
@@ -362,9 +375,19 @@ impl Desktop {
                     settings.mode_out == value,
                     ControlAction::System(kind, change),
                     self.session.clone(),
+                    cx,
                 ));
             }
-            cards = cards.child(section.child(end));
+            cards = cards.child(
+                section.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(note(language.text("Automatic end", "自动结束"), cx))
+                        .child(end),
+                ),
+            );
         }
         cards
     }

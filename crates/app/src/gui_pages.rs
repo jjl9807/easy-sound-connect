@@ -1,26 +1,70 @@
 //! Product pages built from shared device state and client preferences.
 use crate::{
-    Desktop, Page, button, gui_shell,
+    Desktop, button, gui_shell, gui_style,
     preferences::{Language, ThemeMode},
 };
 use ezsc_core::{BatteryComponent, ConnectionState, Freshness};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Selectable, Sizable,
+    ActiveTheme, Disableable, Sizable,
     button::{Button, ButtonVariants},
     switch::Switch,
 };
 use gpui_kit::{assets::IconName, prelude::*, *};
 
 fn surface(cx: &App) -> Div {
+    gui_style::surface(cx)
+}
+fn detail_row(label: impl Into<SharedString>, value: impl Into<SharedString>, cx: &App) -> Div {
+    gui_style::setting_row(
+        label,
+        div()
+            .text_color(cx.theme().muted_foreground)
+            .child(value.into()),
+        cx,
+    )
+}
+fn badge(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
+        .px(px(8.))
+        .py(px(3.))
+        .rounded(px(5.))
+        .border_1()
+        .border_color(cx.theme().muted_foreground.opacity(0.35))
+        .text_size(px(11.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(cx.theme().muted_foreground)
+        .child(text.into())
+}
+fn empty_state(
+    icon: IconName,
+    heading: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
+    cx: &App,
+) -> Div {
+    let detail = detail.into();
+    div()
+        .w_full()
+        .min_h(px(280.))
         .flex()
         .flex_col()
-        .gap_4()
-        .p_5()
-        .rounded(px(20.))
-        .bg(cx.theme().group_box)
-        .border_1()
-        .border_color(cx.theme().border)
+        .items_center()
+        .justify_center()
+        .gap(px(12.))
+        .child(
+            svg()
+                .path(icon.path())
+                .size(px(36.))
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(
+            div()
+                .text_size(px(18.))
+                .font_weight(FontWeight::BOLD)
+                .child(heading.into()),
+        )
+        .when(!detail.is_empty(), |view| {
+            view.child(caption(detail, cx).max_w(px(360.)).text_center())
+        })
 }
 fn caption(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
@@ -30,7 +74,7 @@ fn caption(text: impl Into<SharedString>, cx: &App) -> Div {
 }
 fn title(text: impl Into<SharedString>) -> Div {
     div()
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_weight(FontWeight::BOLD)
         .text_size(px(15.))
         .child(text.into())
 }
@@ -63,7 +107,7 @@ impl Desktop {
         div()
             .flex()
             .items_center()
-            .gap_2()
+            .gap(px(8.))
             .when(ready, |row| {
                 row.child(
                     action_button(
@@ -146,15 +190,20 @@ impl Desktop {
     pub(super) fn product_header(&self, compact: bool, cx: &Context<Self>) -> Div {
         let state = self.session.read(cx);
         let language = self.language(cx);
-        let snapshot = state.snapshot.as_ref();
-        let name = state.focused_name().unwrap_or_else(|| {
-            language
-                .text("Your SONY headphones", "你的 SONY 耳机")
-                .into()
-        });
-        let connection = snapshot
-            .map(|s| connection_text(s.connection, language))
-            .unwrap_or(language.text("Not connected", "未连接"));
+        let snapshot = state
+            .snapshot
+            .as_ref()
+            .filter(|snapshot| state.focused_device.as_ref() == Some(&snapshot.device));
+        let connection = state
+            .focused_device
+            .as_ref()
+            .map_or(ConnectionState::Disconnected, |device| {
+                state.device_connection(device)
+            });
+        let name = state
+            .focused_name()
+            .unwrap_or_else(|| language.text("Your headphones", "你的耳机").into());
+        let ready = connection == ConnectionState::Ready;
         let playback = (!compact)
             .then_some(snapshot)
             .flatten()
@@ -169,23 +218,114 @@ impl Desktop {
             cx,
         ))
         .object_fit(ObjectFit::Contain)
-        .size(px(if compact { 64. } else { 220. }))
+        .w(px(if compact { 84. } else { 260. }))
+        .h(px(if compact { 76. } else { 196. }))
         .flex_shrink_0();
         let mut status = div()
             .flex()
             .flex_col()
+            .items_center()
             .min_w_0()
-            .gap_2()
+            .gap(px(12.))
             .child(
                 div()
-                    .text_size(px(if compact { 16. } else { 30. }))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(px(if compact { 20. } else { 30. }))
+                    .font_weight(FontWeight::BOLD)
+                    .text_center()
                     .child(name),
-            )
-            .child(caption(connection, cx));
+            );
+        if !ready {
+            status = status.child(caption(connection_text(connection, language), cx));
+        }
         if let Some(snapshot) = snapshot {
+            let mut batteries = div().flex().flex_wrap().justify_center().gap(px(24.));
+            for (index, endpoint) in snapshot.batteries.iter().enumerate() {
+                let label = match endpoint.component {
+                    BatteryComponent::Headset => language.text("Battery", "电量"),
+                    BatteryComponent::Left => language.text("Left", "左耳"),
+                    BatteryComponent::Right => language.text("Right", "右耳"),
+                    BatteryComponent::Case => language.text("Case", "充电盒"),
+                };
+                let current = ready && endpoint.freshness == Freshness::Current;
+                let level = endpoint.reading.map(|r| r.level.as_u8());
+                let charging = endpoint
+                    .reading
+                    .is_some_and(|r| r.charging == libmdr2::battery::ChargingStatus::Charging);
+                let tint = if !current {
+                    cx.theme().muted_foreground
+                } else if level.is_some_and(|level| level <= 20) {
+                    cx.theme().danger
+                } else {
+                    cx.theme().foreground
+                };
+                let icon = if charging {
+                    IconName::BatteryCharging
+                } else if level.is_some_and(|level| level <= 20) {
+                    IconName::BatteryLow
+                } else {
+                    IconName::Battery
+                };
+                let value = level.map_or_else(|| "—".to_owned(), |v| format!("{v}%"));
+                let charging_label =
+                    endpoint
+                        .reading
+                        .map_or("", |reading| match reading.charging {
+                            libmdr2::battery::ChargingStatus::Charging => {
+                                language.text(" · charging", " · 充电中")
+                            }
+                            libmdr2::battery::ChargingStatus::Charged => {
+                                language.text(" · fully charged", " · 已充满")
+                            }
+                            libmdr2::battery::ChargingStatus::NotCharging => "",
+                            _ => language.text(" · charging status unknown", " · 充电状态未知"),
+                        });
+                let age = if current || level.is_none() {
+                    ""
+                } else {
+                    language.text(" · last known", " · 上次读取")
+                };
+                let mut battery = div()
+                    .id(("hero-battery", index))
+                    .role(accesskit::Role::Group)
+                    .aria_label(format!("{label}: {value}{charging_label}{age}"))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                svg()
+                                    .path(icon.path())
+                                    .w(px(19.))
+                                    .h(px(19.))
+                                    .text_color(tint),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(tint)
+                                    .child(value),
+                            ),
+                    );
+                if endpoint.component != BatteryComponent::Headset {
+                    battery = battery.child(caption(label, cx).text_size(px(11.)));
+                }
+                if !current && endpoint.reading.is_some() {
+                    battery = battery.child(
+                        caption(language.text("Last known", "上次读取"), cx).text_size(px(11.)),
+                    );
+                }
+                batteries = batteries.child(battery);
+            }
+            status = status.child(batteries);
+            let mut badges = div().flex().flex_wrap().justify_center().gap(px(8.));
             if let Some(codec) = &snapshot.audio_codec {
-                let codec = codec
+                let value: String = codec
                     .codec
                     .map(|c| match c {
                         ezsc_core::common::AudioCodec::SBC => "SBC".into(),
@@ -197,133 +337,86 @@ impl Desktop {
                         ezsc_core::common::AudioCodec::UNSETTLED => {
                             language.text("Not determined", "尚未确定").into()
                         }
-                        _ => format!(
-                            "{} (0x{:02X})",
-                            language.text("Unknown", "未知"),
-                            c.as_raw()
-                        ),
+                        _ => language.text("Unknown", "未知").into(),
                     })
                     .unwrap_or_else(|| "—".into());
-                let suffix = match snapshot.audio_codec.as_ref().unwrap().freshness {
-                    Freshness::Current => "",
+                let suffix = match codec.freshness {
                     Freshness::Unknown => language.text(" · not read", " · 未读取"),
-                    Freshness::Stale => language.text(" · stale", " · 已过期"),
+                    Freshness::Current if ready => "",
+                    _ => language.text(" · last known", " · 上次读取"),
                 };
-                status = status.child(caption(format!("{codec}{suffix}"), cx));
+                badges = badges.child(badge(format!("{value}{suffix}"), cx));
             }
-            let mut batteries = div().flex().flex_wrap().gap_3();
-            for endpoint in &snapshot.batteries {
-                let label = match endpoint.component {
-                    BatteryComponent::Headset => language.text("Battery", "电量"),
-                    BatteryComponent::Left => language.text("Left", "左耳"),
-                    BatteryComponent::Right => language.text("Right", "右耳"),
-                    BatteryComponent::Case => language.text("Case", "充电盒"),
-                };
-                let value = endpoint
-                    .reading
-                    .map(|r| {
-                        let charge = match r.charging {
-                            libmdr2::battery::ChargingStatus::Charging => {
-                                language.text(" · charging", " · 充电中")
-                            }
-                            libmdr2::battery::ChargingStatus::Charged => {
-                                language.text(" · charged", " · 已充满")
-                            }
-                            libmdr2::battery::ChargingStatus::NotCharging => "",
-                            _ => language.text(" · charging unknown", " · 充电状态未知"),
-                        };
-                        format!("{}%{charge}", r.level.as_u8())
-                    })
-                    .unwrap_or_else(|| "—".into());
-                let freshness = match endpoint.freshness {
-                    Freshness::Current => "",
-                    Freshness::Stale => language.text(" · stale", " · 已过期"),
-                    Freshness::Unknown => language.text(" · not read", " · 未读取"),
-                };
-                batteries = batteries.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(caption(label, cx))
-                        .child(format!("{value}{freshness}")),
-                );
-            }
-            status = status.child(batteries);
+            status = status.child(badges);
         }
-        surface(cx)
-            .when(compact, |card| {
-                card.p_0().border_0().bg(cx.theme().background)
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_6()
-                    .child(image)
-                    .child(status),
-            )
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(12.))
+            .w_full()
+            .pt(px(if compact { 0. } else { 4. }))
+            .pb(px(if compact { 0. } else { 16. }))
+            .child(image)
+            .child(status)
     }
     pub(super) fn connection_page(&self, cx: &Context<Self>) -> Div {
         let state = self.session.read(cx);
         let language = self.language(cx);
-        surface(cx)
-            .child(title(language.text("Connect your headphones", "连接耳机")))
-            .child(caption(if state.saved_devices.entries.is_empty() {
+        empty_state(
+            IconName::Headphones,
+            language.text("Connect your headphones", "连接耳机"),
+            if state.saved_devices.entries.is_empty() {
                 language.text(
-                    "Add headphones to save them here. Pair new headphones in system Bluetooth settings first.",
-                    "添加耳机后会保存在这里。新耳机请先在系统蓝牙设置中完成配对。")
+                    "Pair in Bluetooth settings, then add your headphones.",
+                    "先在系统蓝牙设置中配对，再添加耳机。",
+                )
             } else {
                 language.text(
-                    "Choose a saved headset from the device card, or add another pair.",
-                    "点击设备卡片选择已保存的耳机，或添加其他耳机。")
-            }, cx))
-            .when(self.compact, |card| card.child(self.device_picker(cx)))
+                    "Choose your headphones from the device menu.",
+                    "从左上角设备菜单选择耳机。",
+                )
+            },
+            cx,
+        )
+        .when(self.compact, |view| view.child(self.device_picker(cx)))
     }
     pub(super) fn device_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let mut page = div()
+        let page = div()
             .flex()
             .flex_col()
-            .gap_4()
-            .max_w(px(1100.))
-            .child(self.product_header(false, cx));
-        if self.session.read(cx).snapshot.is_none() {
+            .gap(px(16.))
+            .w_full()
+            .max_w(px(1100.));
+        if self.session.read(cx).snapshot.is_none()
+            && self.session.read(cx).focused_device.is_none()
+        {
             return page.child(self.connection_page(cx));
         }
-        let language = self.language(cx);
-        page = page.child(
+        let page = page.child(self.product_header(false, cx));
+        if self.session.read(cx).snapshot.is_none() {
+            return page;
+        }
+        let narrow = window.viewport_size().width < px(1060.);
+        page.child(
             div()
                 .flex()
-                .gap_4()
+                .gap(px(16.))
+                .items_start()
+                .when(narrow, |row| row.flex_col())
                 .child(
                     div()
-                        .flex_1()
+                        .w_full()
                         .min_w_0()
+                        .when(!narrow, |col| col.flex_1())
                         .child(self.render_noise_controls(window, cx)),
                 )
                 .child(
                     div()
-                        .flex_1()
+                        .w_full()
                         .min_w_0()
+                        .when(!narrow, |col| col.flex_1())
                         .child(self.render_speak_controls(cx)),
-                ),
-        );
-        page.child(
-            surface(cx)
-                .child(title(language.text("Your sound", "你的声音")))
-                .child(caption(
-                    language.text(
-                        "Fine-tune equalizer, DSEE and connection quality in Sound.",
-                        "在“声音”中调整均衡器、DSEE 和连接质量。",
-                    ),
-                    cx,
-                ))
-                .child(
-                    button("go-sound", language.text("Open Sound", "打开声音设置")).on_click(
-                        cx.listener(|view, _, _, cx| {
-                            view.select_page(Page::Sound, cx);
-                        }),
-                    ),
                 ),
         )
     }
@@ -334,7 +427,7 @@ impl Desktop {
         div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap(px(16.))
             .max_w(px(980.))
             .child(self.render_equalizer_controls(window, cx))
             .child(self.render_audio_controls(cx))
@@ -345,9 +438,8 @@ impl Desktop {
         let Some(snapshot) = &state.snapshot else {
             return div().child(self.connection_page(cx));
         };
-        let mut details =
-            surface(cx).child(title(language.text("Headphone information", "耳机信息")));
-        for (label, value) in [
+        let mut details = gui_style::card(language.text("Headphones", "耳机信息"), cx);
+        let rows = [
             (
                 language.text("Model", "型号"),
                 snapshot
@@ -367,58 +459,79 @@ impl Desktop {
                     .to_owned(),
             ),
             (
-                language.text("Control connection", "控制连接"),
-                format!("{:?}", snapshot.transport),
+                language.text("Connection type", "连接类型"),
+                match snapshot.transport {
+                    bluetooth::TransportKind::Rfcomm => {
+                        language.text("Bluetooth Classic", "经典蓝牙")
+                    }
+                    bluetooth::TransportKind::Gatt => language.text("Bluetooth LE", "低功耗蓝牙"),
+                }
+                .to_owned(),
             ),
             (
                 language.text("Status", "状态"),
                 connection_text(snapshot.connection, language).to_owned(),
             ),
-        ] {
-            details = details.child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .child(caption(label, cx))
-                    .child(value),
-            );
+        ];
+        let mut information = div().flex().flex_col();
+        for (index, (label, value)) in rows.into_iter().enumerate() {
+            if index > 0 {
+                information = information.child(gui_style::divider(cx));
+            }
+            information = information.child(detail_row(label, value, cx));
         }
+        details = details.child(information);
         div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap(px(16.))
+            .w_full()
             .max_w(px(980.))
             .child(details)
             .child(
                 surface(cx)
-                    .child(title(language.text("Control connection", "控制连接")))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(title(language.text("Connection", "连接")))
+                            .child(self.connection_actions(cx)),
+                    )
                     .child(caption(
                         language.text(
-                            "Releasing this connection leaves system audio connected.",
-                            "释放控制连接不会断开系统音频连接。",
+                            "Releasing control keeps Bluetooth audio connected.",
+                            "释放控制连接后，蓝牙音频仍保持连接。",
                         ),
                         cx,
-                    ))
-                    .child(self.connection_actions(cx)),
+                    )),
             )
     }
     pub(super) fn scenes_page(&self, cx: &Context<Self>) -> Div {
         let l = self.language(cx);
-        surface(cx).child(title(l.text("Local scenes","本地场景"))).child(caption(l.text("Scene editing and automation are not available in this version. Use My Device and Sound to adjust your headphones.","此版本尚未提供场景编辑与自动触发。可在“我的设备”和“声音”中调整耳机。"),cx))
+        empty_state(
+            IconName::Sparkles,
+            l.text("Scenes aren't available yet", "场景暂未开放"),
+            "",
+            cx,
+        )
     }
     pub(super) fn activity_page(&self, cx: &Context<Self>) -> Div {
         let l = self.language(cx);
         let state = self.session.read(cx);
-        let mut list = surface(cx).child(
+        let mut list = surface(cx).w_full().child(
             div()
                 .flex()
+                .items_center()
                 .justify_between()
                 .child(title(l.text("Recent activity", "最近活动")))
                 .child(
-                    button(
+                    action_button(
                         "copy-diagnostics",
+                        IconName::Copy,
                         l.text("Copy diagnostics", "复制诊断信息"),
                     )
+                    .ghost()
                     .on_click(cx.listener(|view, _, _, cx| {
                         let state = view.session.read(cx);
                         let mut text = String::from("Easy Sound Connect diagnostics\n");
@@ -438,32 +551,32 @@ impl Desktop {
                     })),
                 ),
         );
+        let mut entries = div().flex().flex_col();
         if state.activity.is_empty() {
-            list = list.child(caption(
-                l.text(
-                    "Connection and setting results appear here.",
-                    "连接事件和设置结果会显示在这里。",
-                ),
-                cx,
-            ));
+            entries =
+                entries.child(caption(l.text("No recent activity", "暂无活动"), cx).py(px(20.)));
         }
         for (index, line) in state.activity.iter().rev().enumerate() {
-            list = list.child(
+            if index > 0 {
+                entries = entries.child(gui_style::divider(cx));
+            }
+            entries = entries.child(
                 div()
                     .id(("activity", index))
-                    .py_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
+                    .py(px(11.))
+                    .text_size(px(12.5))
+                    .line_height(px(19.))
                     .child(line.clone()),
             );
         }
+        list = list.child(entries);
         list
     }
     pub(super) fn preferences_page(&self, cx: &Context<Self>) -> Div {
         let l = self.language(cx);
         let prefs = self.session.read(cx).preferences.clone();
         let saving = cx.global::<gui_shell::Shell>().saving_preferences;
-        let mut languages = div().flex().gap_2();
+        let mut languages = div().flex().flex_wrap().justify_end().gap(px(6.));
         for (index, (value, label)) in [
             (Language::English, "English"),
             (Language::Chinese, "简体中文"),
@@ -472,15 +585,19 @@ impl Desktop {
         .enumerate()
         {
             languages = languages.child(
-                button(("language", index), label)
-                    .selected(prefs.language == value)
-                    .disabled(saving)
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        gui_shell::change_preferences(cx, move |p| p.language = value);
-                    })),
+                gui_style::chip(
+                    ("language", index),
+                    label,
+                    prefs.language == value,
+                    !saving,
+                    cx,
+                )
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    gui_shell::change_preferences(cx, move |p| p.language = value);
+                })),
             );
         }
-        let mut themes = div().flex().gap_2();
+        let mut themes = div().flex().flex_wrap().justify_end().gap(px(6.));
         for (index, (value, label)) in [
             (ThemeMode::System, l.text("System", "跟随系统")),
             (ThemeMode::Light, l.text("Light", "明亮")),
@@ -490,22 +607,26 @@ impl Desktop {
         .enumerate()
         {
             themes = themes.child(
-                button(("theme", index), label)
-                    .selected(prefs.theme == value)
-                    .disabled(saving)
+                gui_style::chip(("theme", index), label, prefs.theme == value, !saving, cx)
                     .on_click(cx.listener(move |_, _, _, cx| {
                         gui_shell::change_preferences(cx, move |p| p.theme = value);
                     })),
             );
         }
-        let appearance = surface(cx)
-            .child(title(l.text("Appearance", "外观")))
-            .child(caption(l.text("Language", "语言"), cx))
-            .child(languages)
-            .child(caption(l.text("Theme", "主题"), cx))
-            .child(themes);
-        let mut desktop = surface(cx).child(title(l.text("Desktop", "桌面行为")));
-        for (key, label, checked, disabled) in [
+        let appearance = gui_style::card(l.text("Appearance", "外观"), cx).child(
+            div()
+                .flex()
+                .flex_col()
+                .child(gui_style::setting_row(
+                    l.text("Language", "语言"),
+                    languages,
+                    cx,
+                ))
+                .child(gui_style::divider(cx))
+                .child(gui_style::setting_row(l.text("Theme", "主题"), themes, cx)),
+        );
+        let mut desktop_rows = div().flex().flex_col();
+        for (index, (key, label, checked, disabled)) in [
             (
                 "tray",
                 l.text("Show tray icon", "显示托盘图标"),
@@ -514,7 +635,7 @@ impl Desktop {
             ),
             (
                 "close",
-                l.text("Close window to tray", "关闭窗口后保留托盘"),
+                l.text("Keep running when window closes", "关闭窗口后继续运行"),
                 prefs.close_to_tray,
                 !prefs.tray_enabled,
             ),
@@ -536,107 +657,160 @@ impl Desktop {
                 prefs.notifications,
                 false,
             ),
-        ] {
-            desktop = desktop.child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .items_center()
-                    .child(label)
-                    .child(
-                        Switch::new(key)
-                            .checked(checked)
-                            .disabled(disabled || saving)
-                            .on_click(cx.listener(move |_, value, _, cx| {
-                                let value = *value;
-                                gui_shell::change_preferences(cx, move |p| match key {
-                                    "tray" => p.tray_enabled = value,
-                                    "close" => p.close_to_tray = value,
-                                    "autostart" => p.start_at_login = value,
-                                    "hidden" => p.start_hidden = value,
-                                    _ => p.notifications = value,
-                                });
-                            })),
-                    ),
-            );
-        }
-        let shell = cx.global::<gui_shell::Shell>();
-        if let Some(reason) = &shell.tray_error {
-            desktop = desktop.child(caption(
-                format!("{}: {reason}", l.text("Tray unavailable", "托盘不可用")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index > 0 {
+                desktop_rows = desktop_rows.child(gui_style::divider(cx));
+            }
+            desktop_rows = desktop_rows.child(gui_style::setting_row(
+                label,
+                Switch::new(key)
+                    .accessibility_label(label)
+                    .checked(checked)
+                    .disabled(disabled || saving)
+                    .on_click(cx.listener(move |_, value, _, cx| {
+                        let value = *value;
+                        gui_shell::change_preferences(cx, move |p| match key {
+                            "tray" => p.tray_enabled = value,
+                            "close" => p.close_to_tray = value,
+                            "autostart" => p.start_at_login = value,
+                            "hidden" => p.start_hidden = value,
+                            _ => p.notifications = value,
+                        });
+                    })),
                 cx,
             ));
         }
-        desktop = desktop.child(caption(
-            l.text(
-                "If no tray host is available, the main window stays accessible.",
-                "系统未提供托盘时，会保留可访问的主窗口。",
-            ),
-            cx,
-        ));
+        let mut desktop = gui_style::card(l.text("Desktop", "桌面"), cx).child(desktop_rows);
+        if let Some(reason) = &cx.global::<gui_shell::Shell>().tray_error {
+            desktop = desktop.child(
+                caption(
+                    format!("{}: {reason}", l.text("Tray unavailable", "托盘不可用")),
+                    cx,
+                )
+                .text_color(cx.theme().warning),
+            );
+        }
         let modifier = if cfg!(target_os = "macos") {
             "⌘"
         } else {
             "Ctrl+"
         };
+        let mut shortcuts = div().flex().flex_col();
+        for (index, (keys, label)) in [
+            (
+                format!("{modifier}1–7"),
+                l.text("Navigate pages", "切换页面"),
+            ),
+            (format!("{modifier}R"), l.text("Refresh", "刷新")),
+            (format!("{modifier},"), l.text("Preferences", "首选项")),
+            (format!("{modifier}Q"), l.text("Quit", "退出")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index > 0 {
+                shortcuts = shortcuts.child(gui_style::divider(cx));
+            }
+            shortcuts = shortcuts.child(gui_style::setting_row(label, badge(keys, cx), cx));
+        }
         div()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap(px(16.))
+            .w_full()
             .max_w(px(980.))
             .child(appearance)
             .child(desktop)
-            .child(
-                surface(cx)
-                    .child(title(l.text("Keyboard shortcuts", "键盘快捷键")))
-                    .child(format!(
-                        "{modifier}1–7 · {}",
-                        l.text("Navigate pages", "切换页面")
-                    ))
-                    .child(format!("{modifier}R · {}", l.text("Refresh", "刷新")))
-                    .child(format!("{modifier}, · {}", l.text("Preferences", "首选项")))
-                    .child(format!("{modifier}Q · {}", l.text("Quit", "退出"))),
-            )
+            .child(gui_style::card(l.text("Keyboard shortcuts", "键盘快捷键"), cx).child(shortcuts))
     }
     pub(super) fn about_page(&self, cx: &Context<Self>) -> Div {
         let l = self.language(cx);
-        surface(cx)
-            .max_w(px(980.))
-            .child(title("Easy Sound Connect"))
-            .child(format!(
-                "{} {}",
-                l.text("Version", "版本"),
-                env!("CARGO_PKG_VERSION")
-            ))
-            .child(caption(
-                l.text(
-                    "An independent Rust desktop client for SONY MDR v2 headphones.",
-                    "独立使用 Rust 实现的 SONY MDR v2 耳机桌面客户端。",
-                ),
-                cx,
-            ))
-            .child(caption(
-                l.text(
-                    "Built with GPUI Kit. This project is not affiliated with SONY.",
-                    "基于 GPUI Kit 构建。本项目与 SONY 无隶属关系。",
-                ),
-                cx,
-            ))
+        let identity = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(12.))
+            .py(px(28.))
             .child(
-                button("project", "GitHub").on_click(|_, _, cx| {
-                    cx.open_url("https://github.com/jjl9807/easy-sound-connect")
-                }),
+                div()
+                    .size(px(76.))
+                    .rounded(px(20.))
+                    .bg(cx.theme().accent)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        svg()
+                            .path(IconName::Headphones.path())
+                            .size(px(40.))
+                            .text_color(cx.theme().primary),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(28.))
+                    .font_weight(FontWeight::BOLD)
+                    .child("Easy Sound Connect"),
             )
             .child(caption(
-                "Easy Sound Connect: MIT · GPUI / GPUI Kit: Apache-2.0 · Lucide icons: ISC",
+                format!(
+                    "{} {}",
+                    l.text("Version", "版本"),
+                    env!("CARGO_PKG_VERSION")
+                ),
                 cx,
-            ))
+            ));
+        let links = div()
+            .flex()
+            .justify_center()
+            .gap(px(10.))
+            .child(
+                button("project", "GitHub")
+                    .h(px(32.))
+                    .px(px(14.))
+                    .on_click(|_, _, cx| {
+                        cx.open_url("https://github.com/jjl9807/easy-sound-connect")
+                    }),
+            )
+            .child(
+                button("license", l.text("License", "许可证"))
+                    .h(px(32.))
+                    .px(px(14.))
+                    .on_click(|_, _, cx| {
+                        cx.open_url(
+                            "https://github.com/jjl9807/easy-sound-connect/blob/main/LICENSE",
+                        )
+                    }),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(20.))
+            .w_full()
+            .child(identity)
+            .child(links)
+            .child(
+                caption(
+                    l.text(
+                        "Independent software. Not affiliated with SONY.",
+                        "独立开发的软件，与 SONY 无隶属关系。",
+                    ),
+                    cx,
+                )
+                .text_center(),
+            )
+            .child(caption("Easy Sound Connect · MIT", cx).text_size(px(11.)))
+            .child(caption("GPUI / GPUI Kit · Apache-2.0     Lucide · ISC", cx).text_size(px(11.)))
     }
 }
 fn connection_text(state: ConnectionState, l: Language) -> &'static str {
     match state {
         ConnectionState::Ready => l.text("Connected", "已连接"),
-        ConnectionState::Connected => l.text("Connected · preparing", "已连接 · 正在准备"),
+        ConnectionState::Connected => l.text("Connecting…", "正在连接…"),
         ConnectionState::Negotiating => l.text("Discovering capabilities…", "正在协商能力…"),
         ConnectionState::Synchronizing => l.text("Synchronizing…", "正在同步…"),
         ConnectionState::Closing => l.text("Releasing control…", "正在释放控制…"),

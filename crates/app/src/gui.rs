@@ -15,6 +15,7 @@ mod gui_preview;
 mod gui_product_images;
 mod gui_session;
 mod gui_shell;
+mod gui_style;
 mod gui_theme;
 mod gui_titlebar;
 mod gui_tray_menu;
@@ -26,7 +27,7 @@ mod saved_devices;
 
 use gpui_kit::component::{
     ActiveTheme, Selectable, Sizable,
-    button::{Button, ButtonVariants},
+    button::{Button, ButtonCustomVariant, ButtonVariants},
 };
 use gpui_kit::{prelude::*, *};
 use gui_session::{Event, Session};
@@ -179,28 +180,71 @@ impl Desktop {
     }
     fn sidebar(&self, cx: &Context<Self>) -> Div {
         let language = self.language(cx);
-        let mut navigation = div().flex().flex_col().gap_1();
+        let mut navigation = div().flex().flex_col().gap(px(3.)).px(px(10.));
         for (index, page) in Page::ALL.into_iter().enumerate() {
+            let selected = self.page == page;
+            let fill = if selected {
+                cx.theme().sidebar_accent
+            } else {
+                cx.theme().transparent
+            };
             navigation = navigation.child(
                 Button::new(("page", index))
                     .accessibility_label(page.title(language))
-                    .ghost()
-                    .selected(self.page == page)
+                    .custom(
+                        ButtonCustomVariant::new(cx)
+                            .color(fill)
+                            .hover(cx.theme().sidebar_accent)
+                            .active(fill),
+                    )
+                    .selected(selected)
                     .w_full()
-                    .h(px(38.))
+                    .h(px(34.))
+                    .p_0()
+                    .border_0()
                     .rounded(px(9.))
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .items_center()
-                            .w_full()
-                            .gap_3()
-                            .text_size(px(14.))
+                            .size_full()
+                            .px(px(12.))
+                            .gap(px(11.))
+                            .text_size(px(13.5))
+                            .font_weight(if selected {
+                                FontWeight::BOLD
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .text_color(if selected {
+                                cx.theme().foreground
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .when(selected, |row| {
+                                row.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(1.))
+                                        .top(px(9.))
+                                        .w(px(3.))
+                                        .h(px(16.))
+                                        .rounded_full()
+                                        .bg(cx.theme().primary),
+                                )
+                            })
                             .child(
-                                svg()
-                                    .path(page.icon())
-                                    .size(px(17.))
-                                    .text_color(cx.theme().foreground),
+                                div().w(px(20.)).flex().justify_center().child(
+                                    svg()
+                                        .path(page.icon())
+                                        .size(px(14.))
+                                        .text_color(if selected {
+                                            cx.theme().primary
+                                        } else {
+                                            cx.theme().muted_foreground
+                                        }),
+                                ),
                             )
                             .child(page.title(language)),
                     )
@@ -215,15 +259,23 @@ impl Desktop {
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .p(px(gui_device_picker::SIDEBAR_PADDING))
-            .gap_6()
+            .pt(px(40.))
+            .pb(px(14.))
             .border_r_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().sidebar)
-            .child(div().pt_6().child(self.device_picker(cx)))
+            .child(
+                div()
+                    .px(px(gui_device_picker::SIDEBAR_PADDING))
+                    .mb(px(18.))
+                    .child(self.device_picker(cx)),
+            )
             .child(navigation)
             .child(div().flex_1())
-            .children(self.sidebar_notice(cx))
+            .children(
+                self.sidebar_notice(cx)
+                    .map(|notice| div().px(px(14.)).child(notice)),
+            )
     }
 }
 impl Render for Desktop {
@@ -275,29 +327,38 @@ impl Render for Desktop {
                 .into_any_element()
         } else {
             let page = self.page;
+            let max_width = if page == Page::Sound { 980. } else { 1100. };
             let content = div()
                 .flex()
                 .flex_col()
-                .gap_4()
-                .p(px(28.))
+                .gap(px(20.))
+                .p(px(14.))
                 .pt(px(40.))
-                .w_full()
+                .flex_1()
                 .h_full()
                 .min_w_0()
                 .min_h_0()
                 .child(
                     div()
                         .flex()
+                        .flex_shrink_0()
                         .items_center()
                         .justify_between()
-                        .child(
-                            div()
-                                .text_size(px(24.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(page.title(language)),
-                        )
+                        .h(px(32.))
+                        .w_full()
+                        .max_w(px(max_width + 28.))
+                        .px(px(14.))
+                        .mx_auto()
+                        .when(page != Page::Device, |header| {
+                            header.child(
+                                div()
+                                    .text_size(px(24.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(page.title(language)),
+                            )
+                        })
                         .when(page == Page::Device, |header| {
-                            header.child(self.connection_actions(cx))
+                            header.justify_end().child(self.connection_actions(cx))
                         }),
                 )
                 .child(
@@ -308,7 +369,11 @@ impl Render for Desktop {
                         .flex_1()
                         .min_h_0()
                         .w_full()
-                        .gap_4()
+                        .max_w(px(max_width + 28.))
+                        .px(px(14.))
+                        .pb(px(14.))
+                        .mx_auto()
+                        .gap(px(16.))
                         .overflow_y_scroll()
                         .child(match page {
                             Page::Device => self.device_page(window, cx),
@@ -357,7 +422,13 @@ impl Render for Desktop {
     }
 }
 fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
-    Button::new(id).label(label).rounded(px(9.)).small()
+    Button::new(id)
+        .label(label)
+        .rounded(px(8.))
+        .small()
+        .h(px(32.))
+        .px(px(12.))
+        .text_size(px(13.))
 }
 fn main() {
     gui_shell::run();
