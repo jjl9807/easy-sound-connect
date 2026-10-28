@@ -5,9 +5,11 @@ use crate::{
 };
 use ezsc_core::{BatteryComponent, ConnectionState, Freshness};
 use gpui_kit::component::{
-    ActiveTheme, Disableable, Selectable, button::ButtonVariants, switch::Switch,
+    ActiveTheme, Disableable, Selectable, Sizable,
+    button::{Button, ButtonVariants},
+    switch::Switch,
 };
-use gpui_kit::{prelude::*, *};
+use gpui_kit::{assets::IconName, prelude::*, *};
 
 fn surface(cx: &App) -> Div {
     div()
@@ -33,71 +35,109 @@ fn title(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
+fn action_button(id: &'static str, icon: IconName, label: &'static str) -> Button {
+    Button::new(id)
+        .icon(icon)
+        .tooltip(label)
+        .accessibility_label(label)
+        .small()
+        .w(px(32.))
+        .h(px(32.))
+        .rounded(px(9.))
+}
+
 impl Desktop {
     pub(super) fn connection_actions(&self, cx: &Context<Self>) -> Div {
         let state = self.session.read(cx);
         let language = self.language(cx);
-        let ready = state
-            .snapshot
-            .as_ref()
-            .is_some_and(|s| s.connection == ConnectionState::Ready);
+        let ready = state.snapshot.as_ref().is_some_and(|s| {
+            s.connection == ConnectionState::Ready
+                && state.focused_device.as_ref() == Some(&s.device)
+        });
         let blocked = state.settings_blocked() || (!state.preview && state.manager.is_none());
         let has_focused_device = state.focused_device.is_some();
+        let removable_device = state
+            .focused_device
+            .clone()
+            .filter(|id| ready && state.saved_devices.find(id).is_some());
         div()
             .flex()
+            .items_center()
             .gap_2()
             .when(ready, |row| {
                 row.child(
-                    button("refresh", language.text("Refresh", "刷新"))
-                        .ghost()
-                        .disabled(blocked || state.preview)
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.session.update(cx, |state, cx| {
-                                state.refresh();
-                                cx.notify();
-                            });
-                        })),
+                    action_button(
+                        "refresh",
+                        IconName::RefreshCw,
+                        language.text("Refresh", "刷新"),
+                    )
+                    .ghost()
+                    .disabled(blocked || state.preview)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.session.update(cx, |state, cx| {
+                            state.refresh();
+                            cx.notify();
+                        });
+                    })),
                 )
             })
             .when(!ready && has_focused_device, |row| {
                 row.child(
-                    button("reconnect", language.text("Connect", "连接"))
-                        .primary()
-                        .disabled(blocked)
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.session.update(cx, |state, cx| {
-                                state.connect_focused_device();
-                                cx.notify();
-                            });
-                        })),
+                    action_button(
+                        "reconnect",
+                        IconName::Link,
+                        language.text("Connect", "连接"),
+                    )
+                    .primary()
+                    .disabled(blocked)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.session.update(cx, |state, cx| {
+                            state.connect_focused_device();
+                            cx.notify();
+                        });
+                    })),
                 )
             })
             .when(state.selected.is_some(), |row| {
                 row.child(
-                    button("release", language.text("Release control", "释放控制连接"))
-                        .ghost()
-                        .disabled(blocked || state.preview)
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.session.update(cx, |state, cx| {
-                                state.release();
-                                cx.notify();
-                            });
-                        })),
-                )
-            })
-            .child(
-                button("add-device", language.text("Add headphones", "添加耳机"))
+                    action_button(
+                        "release",
+                        IconName::Unlink,
+                        language.text("Release control", "释放控制连接"),
+                    )
                     .ghost()
                     .disabled(blocked)
                     .on_click(cx.listener(|view, _, _, cx| {
-                        view.device_picker_open = true;
                         view.session.update(cx, |state, cx| {
-                            state.begin_add_device();
+                            state.release();
                             cx.notify();
                         });
-                        cx.notify();
                     })),
-            )
+                )
+            })
+            .when_some(removable_device, |row, device| {
+                row.child(
+                    action_button(
+                        "forget-device",
+                        IconName::Trash,
+                        language.text("Remove headphones", "删除耳机"),
+                    )
+                    .ghost()
+                    .when(!blocked, |button| {
+                        button
+                            .danger()
+                            .bg(cx.theme().transparent)
+                            .text_color(cx.theme().secondary_foreground)
+                    })
+                    .disabled(blocked)
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.session.update(cx, |state, cx| {
+                            state.forget_device(device.clone());
+                            cx.notify();
+                        });
+                    })),
+                )
+            })
     }
     pub(super) fn product_header(&self, compact: bool, cx: &Context<Self>) -> Div {
         let state = self.session.read(cx);
@@ -587,34 +627,6 @@ impl Desktop {
                 "Easy Sound Connect: MIT · GPUI / GPUI Kit: Apache-2.0 · Lucide icons: ISC",
                 cx,
             ))
-    }
-    pub(super) fn status_bar(&self, cx: &Context<Self>) -> Div {
-        let state = self.session.read(cx);
-        let l = self.language(cx);
-        div()
-            .rounded(px(9.))
-            .p_3()
-            .text_size(px(12.))
-            .bg(cx.theme().secondary)
-            .text_color(cx.theme().secondary_foreground)
-            .flex()
-            .flex_col()
-            .gap_1()
-            .children(
-                state
-                    .device_storage_error
-                    .as_ref()
-                    .map(|error| div().text_color(cx.theme().danger).child(error.clone())),
-            )
-            .child(if state.preview {
-                l.text(
-                    "Offline preview — controls are disabled.",
-                    "离线预览 — 控件已禁用。",
-                )
-                .to_owned()
-            } else {
-                state.message.clone()
-            })
     }
 }
 fn connection_text(state: ConnectionState, l: Language) -> &'static str {

@@ -8,6 +8,7 @@ mod gui_controls;
 mod gui_daily_controls;
 mod gui_device_picker;
 mod gui_device_prompts;
+mod gui_notices;
 mod gui_pages;
 mod gui_preview;
 mod gui_product_images;
@@ -16,6 +17,7 @@ mod gui_shell;
 mod gui_theme;
 mod gui_titlebar;
 mod gui_tray_menu;
+mod notices;
 mod preferences;
 mod product_assets;
 mod product_media;
@@ -207,12 +209,12 @@ impl Desktop {
             );
         }
         div()
-            .w(px(228.))
+            .w(px(gui_device_picker::SIDEBAR_WIDTH))
             .h_full()
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .p_4()
+            .p(px(gui_device_picker::SIDEBAR_PADDING))
             .gap_6()
             .border_r_1()
             .border_color(cx.theme().border)
@@ -220,12 +222,7 @@ impl Desktop {
             .child(div().pt_6().child(self.device_picker(cx)))
             .child(navigation)
             .child(div().flex_1())
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
-            )
+            .children(self.sidebar_notice(cx))
     }
 }
 impl Render for Desktop {
@@ -260,7 +257,6 @@ impl Render for Desktop {
                     .child(self.connection_page(cx));
             }
             panel
-                .child(self.status_bar(cx))
                 .child(
                     div()
                         .flex()
@@ -299,7 +295,7 @@ impl Render for Desktop {
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(page.title(language)),
                         )
-                        .when(matches!(page, Page::Device | Page::Sound), |header| {
+                        .when(page == Page::Device, |header| {
                             header.child(self.connection_actions(cx))
                         }),
                 )
@@ -321,8 +317,7 @@ impl Render for Desktop {
                             Page::Activity => self.activity_page(cx),
                             Page::Preferences => self.preferences_page(cx),
                             Page::About => self.about_page(cx),
-                        })
-                        .child(self.status_bar(cx)),
+                        }),
                 );
             div()
                 .flex()

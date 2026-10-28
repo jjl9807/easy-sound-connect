@@ -1,6 +1,7 @@
 //! One application-owned device bridge shared by all windows.
 use crate::{
     gui_controls,
+    notices::{DISPLAY_DURATION, Notices, Severity},
     preferences::{Language, Preferences},
     saved_devices::{SavedDevice, SavedDevices},
 };
@@ -19,6 +20,7 @@ use tokio::{
 pub(super) type SharedManager = Arc<Mutex<Option<Arc<DeviceManager>>>>;
 
 pub(super) enum Event {
+    NoticeExpired(u64),
     Backend(Result<Arc<DeviceManager>, String>),
     SavedLoaded(SavedDevices, Option<String>),
     SavedWritten,
@@ -61,6 +63,7 @@ pub(super) struct Session {
     pub(super) replying_to: Option<PromptId>,
     pub(super) preferences: Preferences,
     pub(super) activity: std::collections::VecDeque<String>,
+    pub(super) notices: Notices,
     pub(super) pending_controls: crate::gui_controls::PendingControls,
     pub(super) preview: bool,
     pub(super) prompt_error: Option<(PromptId, String)>,
@@ -152,6 +155,7 @@ impl Session {
             replying_to: None,
             preferences,
             activity: Default::default(),
+            notices: Default::default(),
             pending_controls: Default::default(),
             preview,
             prompt_error: None,
@@ -170,7 +174,15 @@ impl Session {
     }
 
     fn receive(&mut self, event: Event) {
+        if let Event::NoticeExpired(id) = &event {
+            self.notices.dismiss(*id);
+            return;
+        }
         let language = self.preferences.language;
+        let previous_connection = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| (snapshot.device.clone(), snapshot.connection));
         match event {
             Event::SavedLoaded(saved, warning) => {
                 self.focused_device = saved.last_selected.clone().map(DeviceId);
@@ -178,7 +190,7 @@ impl Session {
                 self.saved_loaded = true;
                 self.device_storage_error = warning;
                 if let Some(error) = &self.device_storage_error {
-                    self.record_activity(error.clone());
+                    self.show_notice(Severity::Warning, error.clone());
                 }
             }
             Event::SavedWritten => {}
@@ -198,7 +210,8 @@ impl Session {
                 self.message = format!(
                     "{}: {error}",
                     language.text("Bluetooth startup failed", "蓝牙启动失败")
-                )
+                );
+                self.show_notice(Severity::Error, self.message.clone());
             }
             Event::Devices(generation, result)
                 if generation == self.discovery_generation && self.adding_device =>
@@ -225,18 +238,22 @@ impl Session {
                         self.message = format!(
                             "{}: {error}",
                             language.text("Device discovery failed", "设备发现失败")
-                        )
+                        );
+                        self.show_notice(Severity::Error, self.message.clone());
                     }
                 }
             }
             Event::CleanupWarning(epoch, error) if epoch == self.epoch => {
-                self.record_activity(format!(
-                    "{}: {error}",
-                    language.text(
-                        "Control cleanup completed with an error",
-                        "控制连接清理已完成，但报告了错误"
-                    )
-                ));
+                self.show_notice(
+                    Severity::Warning,
+                    format!(
+                        "{}: {error}",
+                        language.text(
+                            "Control cleanup completed with an error",
+                            "控制连接清理已完成，但报告了错误"
+                        )
+                    ),
+                );
             }
             Event::PreviousReleased(epoch) if epoch == self.epoch => {
                 self.cleanup_device = None;
@@ -314,6 +331,7 @@ impl Session {
                     self.drain_pending_control();
                 } else {
                     self.pending_controls.clear();
+                    self.show_notice(Severity::Error, self.message.clone());
                 }
                 self.start_display_language_refresh();
             }
@@ -330,7 +348,11 @@ impl Session {
                             | OperationResult::Synchronized
                     )
                 });
+                let severity = operation_severity(&result);
                 self.message = operation_message(&label, result, language);
+                if let Some(severity) = severity {
+                    self.show_notice(severity, self.message.clone());
+                }
                 if successful {
                     self.drain_pending_control();
                 } else {
@@ -345,11 +367,15 @@ impl Session {
                 if let Some(handle) = &self.handle {
                     self.snapshot = Some(handle.snapshot());
                 }
+                let severity = operation_severity(&result);
                 let message = operation_message(
                     language.text("Device display labels", "耳机显示标签"),
                     result,
                     language,
                 );
+                if let Some(severity) = severity {
+                    self.show_notice(severity, message.clone());
+                }
                 if requested == language && !self.busy && self.replying_to.is_none() {
                     self.message = message;
                 } else {
@@ -376,11 +402,15 @@ impl Session {
                     if let Err(error) = &result {
                         self.prompt_error = Some((id, error.clone()));
                     }
+                    let severity = operation_severity(&result);
                     self.message = operation_message(
                         language.text("Device decision", "设备确认"),
                         result,
                         language,
                     );
+                    if let Some(severity) = severity {
+                        self.show_notice(severity, self.message.clone());
+                    }
                 }
             }
             _ => {}
@@ -415,6 +445,26 @@ impl Session {
                     )
                     .into(),
             };
+            let previously_ended = previous_connection.as_ref().is_some_and(|(device, state)| {
+                device == &snapshot.device
+                    && matches!(
+                        state,
+                        ezsc_core::ConnectionState::Disconnected
+                            | ezsc_core::ConnectionState::Failed
+                    )
+            });
+            // The selected identity is cleared before intentional release.
+            // A terminal snapshot can be repeated after the notice has expired.
+            if !previously_ended && self.selected.as_ref() == Some(&snapshot.device) {
+                let severity = if snapshot.last_error.is_some()
+                    || snapshot.connection == ezsc_core::ConnectionState::Failed
+                {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                };
+                self.show_notice(severity, self.message.clone());
+            }
         }
         if self.snapshot.as_ref().is_some_and(|s| {
             s.pending_prompt.is_some()
@@ -444,7 +494,25 @@ impl Session {
         }
     }
 
-    fn record_activity(&mut self, message: String) {
+    pub(super) fn show_notice(&mut self, severity: Severity, message: String) {
+        self.record_activity(message.clone());
+        let Some(id) = self.notices.show(severity, message) else {
+            return;
+        };
+        let sender = self.events.clone();
+        let cancel = self.lifetime.clone();
+        self.runtime.spawn(async move {
+            tokio::select! {
+                _ = cancel.cancelled() => {}
+                _ = async {
+                    tokio::time::sleep(DISPLAY_DURATION).await;
+                    let _ = sender.send(Event::NoticeExpired(id)).await;
+                } => {}
+            }
+        });
+    }
+
+    pub(super) fn record_activity(&mut self, message: String) {
         if self.activity.back() != Some(&message) {
             if self.activity.len() == 256 {
                 self.activity.pop_front();
@@ -830,7 +898,7 @@ impl Session {
             self.saved_result_revision = revision;
             self.device_storage_error = error;
             if let Some(error) = &self.device_storage_error {
-                self.record_activity(error.clone());
+                self.show_notice(Severity::Error, error.clone());
             }
         }
     }
@@ -960,6 +1028,21 @@ fn display_language(language: Language) -> libmdr2::types::DisplayLanguage {
     }
 }
 
+fn operation_severity(result: &Result<OperationResult, String>) -> Option<Severity> {
+    match result {
+        Err(_) => Some(Severity::Error),
+        Ok(OperationResult::Adjusted) => Some(Severity::Warning),
+        // Pending device decisions already have a dedicated confirmation dialog.
+        Ok(
+            OperationResult::Synchronized
+            | OperationResult::Confirmed
+            | OperationResult::AwaitingConfirmation
+            | OperationResult::Cancelled
+            | OperationResult::Dismissed,
+        ) => None,
+    }
+}
+
 pub(super) fn operation_message(
     label: &str,
     result: Result<OperationResult, String>,
@@ -1047,6 +1130,7 @@ mod tests {
                 replying_to: None,
                 preferences: Preferences::default(),
                 activity: Default::default(),
+                notices: Default::default(),
                 pending_controls: Default::default(),
                 preview: false,
                 prompt_error: None,
@@ -1079,6 +1163,241 @@ mod tests {
         })
         .await
         .expect("connection completes after fake peer closes");
+    }
+
+    #[tokio::test]
+    async fn normal_results_stay_quiet_and_operation_outcomes_have_explicit_severity() {
+        let (mut state, _incoming) = session();
+        for completion in [Completion::StateUpdated, Completion::Released] {
+            state.receive(Event::Finished(0, Ok(completion)));
+            assert!(state.notices.current().is_none());
+        }
+        for result in [
+            OperationResult::Confirmed,
+            OperationResult::Synchronized,
+            OperationResult::AwaitingConfirmation,
+            OperationResult::Cancelled,
+            OperationResult::Dismissed,
+        ] {
+            state.receive(Event::Operation(0, "Sound".into(), Ok(result)));
+            assert!(state.notices.current().is_none());
+        }
+        state.receive(Event::Operation(
+            0,
+            "Sound".into(),
+            Ok(OperationResult::Adjusted),
+        ));
+        let notice = state.notices.current().unwrap();
+        assert_eq!(notice.severity, Severity::Warning);
+        let id = notice.id;
+        state.receive(Event::NoticeExpired(id));
+        state.receive(Event::Operation(
+            0,
+            "Sound".into(),
+            Err("Readback failed".into()),
+        ));
+        let error = state.notices.current().unwrap();
+        assert_eq!(error.severity, Severity::Error);
+        assert!(error.message.contains("Readback failed"));
+        let id = error.id;
+        state.receive(Event::Finished(0, Ok(Completion::StateUpdated)));
+        assert_eq!(state.notices.current().unwrap().id, id);
+        state.receive(Event::CleanupWarning(0, "Cleanup warning".into()));
+        assert_eq!(state.notices.current().unwrap().id, id);
+        assert!(
+            state
+                .activity
+                .iter()
+                .any(|line| line.contains("Cleanup warning"))
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_epochs_and_closed_discovery_do_not_raise_notices() {
+        let (mut state, _incoming) = session();
+        state.epoch = 2;
+        state.discovery_generation = 3;
+        for event in [
+            Event::Finished(1, Err("Old failure".into())),
+            Event::Operation(1, "Sound".into(), Err("Old failure".into())),
+            Event::CleanupWarning(1, "Old warning".into()),
+            Event::Devices(3, Err("Closed discovery".into())),
+        ] {
+            state.receive(event);
+            assert!(state.notices.current().is_none());
+        }
+        state.adding_device = true;
+        state.receive(Event::Devices(2, Err("Old discovery".into())));
+        assert!(state.notices.current().is_none());
+        state.receive(Event::Devices(3, Err("Current discovery".into())));
+        let notice = state.notices.current().unwrap();
+        assert_eq!(notice.severity, Severity::Error);
+        assert!(notice.message.contains("Current discovery"));
+    }
+
+    #[tokio::test]
+    async fn notice_timer_expires_without_further_device_events() {
+        let (mut state, mut incoming) = session();
+        state.show_notice(Severity::Warning, "Temporary warning".into());
+        let id = state.notices.current().unwrap().id;
+        let event =
+            tokio::time::timeout(DISPLAY_DURATION + Duration::from_secs(2), incoming.recv())
+                .await
+                .expect("notice timer completes")
+                .expect("session event channel remains open");
+        assert!(matches!(&event, Event::NoticeExpired(expired) if *expired == id));
+        state.receive(event);
+        assert!(state.notices.current().is_none());
+        assert!(
+            state
+                .activity
+                .iter()
+                .any(|entry| entry == "Temporary warning")
+        );
+    }
+
+    #[tokio::test]
+    async fn old_notice_timer_cannot_clear_new_notice_or_mutate_device_state() {
+        let (mut state, _incoming) = session();
+        state.show_notice(Severity::Warning, "First warning".into());
+        let first = state.notices.current().unwrap().id;
+        state.show_notice(Severity::Error, "New error".into());
+        let current = state.notices.current().unwrap().id;
+        state.busy = true;
+        state.message = "Reading settings".into();
+        let mut failed = crate::gui_preview::snapshot(true);
+        failed.connection = ezsc_core::ConnectionState::Failed;
+        state.selected = Some(failed.device.clone());
+        state.snapshot = Some(failed);
+        let history = state.activity.clone();
+        state.receive(Event::NoticeExpired(first));
+        assert_eq!(state.notices.current().unwrap().id, current);
+        state.receive(Event::NoticeExpired(current));
+        assert!(state.notices.current().is_none());
+        assert_eq!(state.message, "Reading settings");
+        assert_eq!(state.activity, history);
+        assert!(state.busy);
+    }
+
+    #[tokio::test]
+    async fn disconnect_notices_appear_once_and_intentional_release_stays_quiet() {
+        for connection in [
+            ezsc_core::ConnectionState::Disconnected,
+            ezsc_core::ConnectionState::Failed,
+        ] {
+            let (mut state, _incoming) = session();
+            let ready = crate::gui_preview::snapshot(true);
+            state.selected = Some(ready.device.clone());
+            state.snapshot = Some(ready.clone());
+            let mut ended = ready.clone();
+            ended.connection = connection;
+            state.receive(Event::Snapshot(0, Box::new(ended.clone())));
+            let notice = state.notices.current().unwrap();
+            assert_eq!(
+                notice.severity,
+                if connection == ezsc_core::ConnectionState::Failed {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                }
+            );
+            let id = notice.id;
+            state.receive(Event::Snapshot(0, Box::new(ended.clone())));
+            assert_eq!(state.notices.current().unwrap().id, id);
+            state.receive(Event::NoticeExpired(id));
+            ended.connection = ezsc_core::ConnectionState::Disconnected;
+            state.receive(Event::Snapshot(0, Box::new(ended.clone())));
+            assert!(state.notices.current().is_none());
+
+            state.preview = true;
+            state.snapshot = Some(ready);
+            state.release();
+            state.receive(Event::Snapshot(0, Box::new(ended)));
+            assert!(state.notices.current().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_and_startup_errors_use_notice_severity_without_replaying_saved_results() {
+        let (mut state, _incoming) = session();
+        state.receive(Event::SavedLoaded(
+            SavedDevices::default(),
+            Some("Invalid saved directory".into()),
+        ));
+        let notice = state.notices.current().unwrap();
+        assert_eq!(notice.severity, Severity::Warning);
+        let id = notice.id;
+        state.receive(Event::NoticeExpired(id));
+        state.receive(Event::Backend(Err("Bluetooth unavailable".into())));
+        assert_eq!(state.notices.current().unwrap().severity, Severity::Error);
+
+        let (updates, _) = watch::channel(None);
+        let (complete, completed) = watch::channel((1, Some("Cannot save devices".into())));
+        state.saved_writer = Some(SavedWriter { updates, completed });
+        state.receive(Event::SavedWritten);
+        let notice = state.notices.current().unwrap();
+        assert_eq!(notice.severity, Severity::Error);
+        assert_eq!(notice.message, "Cannot save devices");
+        let id = notice.id;
+        state.receive(Event::NoticeExpired(id));
+        state.receive(Event::SavedWritten);
+        assert!(state.notices.current().is_none());
+        complete.send_replace((2, None));
+        state.receive(Event::SavedWritten);
+        assert!(state.notices.current().is_none());
+        assert!(state.device_storage_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn display_label_and_prompt_failures_respect_their_request_identity() {
+        let (mut state, _incoming) = session();
+        let language = state.preferences.language;
+        state.receive(Event::DisplayLanguage(
+            0,
+            language,
+            Err("Unrequested label failure".into()),
+        ));
+        assert!(state.notices.current().is_none());
+        state.display_language_request = Some((0, language));
+        state.receive(Event::DisplayLanguage(
+            0,
+            language,
+            Err("Current label failure".into()),
+        ));
+        let notice = state.notices.current().unwrap();
+        assert!(notice.message.contains("Current label failure"));
+        let id = notice.id;
+        state.receive(Event::NoticeExpired(id));
+
+        let prompt = PromptId {
+            generation: 1,
+            serial: 2,
+        };
+        state.receive(Event::PromptResponse(
+            0,
+            prompt,
+            Err("Stale decision".into()),
+        ));
+        assert!(state.notices.current().is_none());
+        state.replying_to = Some(prompt);
+        state.receive(Event::PromptResponse(
+            0,
+            prompt,
+            Err("Current decision failed".into()),
+        ));
+        assert_eq!(state.notices.current().unwrap().severity, Severity::Error);
+        assert!(
+            state
+                .notices
+                .current()
+                .unwrap()
+                .message
+                .contains("Current decision failed")
+        );
+        assert_eq!(
+            state.prompt_error,
+            Some((prompt, "Current decision failed".into()))
+        );
     }
 
     #[tokio::test]

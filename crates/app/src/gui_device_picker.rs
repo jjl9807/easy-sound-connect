@@ -8,7 +8,12 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
     popover::Popover,
 };
-use gpui_kit::{prelude::*, *};
+use gpui_kit::{assets::IconName, prelude::*, *};
+
+pub(super) const SIDEBAR_WIDTH: f32 = 228.;
+pub(super) const SIDEBAR_PADDING: f32 = 16.;
+// The sidebar's one-pixel right border is inside its width.
+const PICKER_WIDTH: f32 = SIDEBAR_WIDTH - SIDEBAR_PADDING * 2. - 1.;
 
 impl Desktop {
     pub(super) fn device_picker(&self, cx: &Context<Self>) -> Popover {
@@ -30,32 +35,25 @@ impl Desktop {
             .accessibility_label(language.text("Choose headphones", "选择耳机"))
             .ghost()
             .w_full()
-            .h(px(72.))
+            .h(px(64.))
             .p_0()
             .rounded(px(12.))
             .border_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().group_box)
-            .child(
-                card(
-                    name,
-                    status,
-                    color,
-                    battery,
-                    gui_product_images::model_key(state, state.focused_device.as_ref()),
-                    cx,
-                )
-                .child(
-                    svg()
-                        .path("icons/chevron-down.svg")
-                        .size(px(13.))
-                        .flex_shrink_0()
-                        .text_color(cx.theme().muted_foreground),
-                ),
-            );
+            .child(card(
+                name,
+                status,
+                color,
+                battery,
+                gui_product_images::model_key(state, state.focused_device.as_ref()),
+                cx,
+            ));
         let view = cx.entity().downgrade();
         let changed = view.clone();
         Popover::new("device-picker")
+            .w(px(PICKER_WIDTH))
+            .p_1()
             .trigger(trigger)
             .trigger_style(StyleRefinement::default().w_full())
             .open(self.device_picker_open)
@@ -84,7 +82,7 @@ fn card(
     name: String,
     status: &'static str,
     color: Hsla,
-    battery: String,
+    battery: Option<String>,
     model: Option<ModelKey>,
     cx: &App,
 ) -> Div {
@@ -128,13 +126,20 @@ fn card(
                                 .text_size(px(11.))
                                 .text_color(cx.theme().muted_foreground)
                                 .truncate()
-                                .child(format!("{status} · {battery}")),
+                                .child(battery.map_or_else(
+                                    || status.to_owned(),
+                                    |battery| format!("{status} · {battery}"),
+                                )),
                         ),
                 ),
         )
 }
 
-fn card_status(state: &Session, id: Option<&DeviceId>, cx: &App) -> (&'static str, Hsla, String) {
+fn card_status(
+    state: &Session,
+    id: Option<&DeviceId>,
+    cx: &App,
+) -> (&'static str, Hsla, Option<String>) {
     let language = state.preferences.language;
     let snapshot = state
         .snapshot
@@ -159,9 +164,11 @@ fn card_status(state: &Session, id: Option<&DeviceId>, cx: &App) -> (&'static st
             cx.theme().muted_foreground,
         ),
     };
-    let battery = snapshot
-        .and_then(device_status::battery_level)
-        .map_or_else(|| "—".into(), |level| format!("{level}%"));
+    let battery = (connection == ConnectionState::Ready).then(|| {
+        snapshot
+            .and_then(device_status::battery_level)
+            .map_or_else(|| "—".into(), |level| format!("{level}%"))
+    });
     (status, color, battery)
 }
 
@@ -170,7 +177,7 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
     let language = state.preferences.language;
     let blocked = state.settings_blocked() || (!state.preview && state.manager.is_none());
     let adding = state.adding_device;
-    let mut content = div().flex().flex_col().gap_2().w(px(316.));
+    let mut content = div().flex().flex_col().gap_2().w_full().min_w_0();
     content = content.child(
         div()
             .px_2()
@@ -251,7 +258,7 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                         name,
                         language.text("Not connected", "未连接"),
                         cx.theme().muted_foreground,
-                        "—".into(),
+                        None,
                         None,
                         cx,
                     ))
@@ -312,59 +319,32 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
             let select_id = id.clone();
             let select_session = session.clone();
             let select_view = view.clone();
-            let remove_session = session.clone();
             let name = device.display_name().to_owned();
             list = list.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        Button::new(("saved-headset", index))
-                            .ghost()
-                            .selected(selected)
-                            .h(px(64.))
-                            .p_0()
-                            .flex_1()
-                            .min_w_0()
-                            .disabled(blocked)
-                            .accessibility_label(format!(
-                                "{} {name}",
-                                language.text("Select", "选择")
-                            ))
-                            .child(card(
-                                name.clone(),
-                                status,
-                                color,
-                                battery,
-                                gui_product_images::model_key(state, Some(&id)),
-                                cx,
-                            ))
-                            .on_click(move |_, _, cx| {
-                                select_session.update(cx, |state, cx| {
-                                    state.select_saved_device(select_id.clone());
-                                    cx.notify();
-                                });
-                                close_picker(&select_view, cx);
-                            }),
-                    )
-                    .child(
-                        Button::new(("forget-headset", index))
-                            .ghost()
-                            .label("×")
-                            .accessibility_label(format!(
-                                "{} {name}",
-                                language.text("Remove from list", "从列表移除")
-                            ))
-                            .w(px(28.))
-                            .disabled(state.settings_blocked())
-                            .on_click(move |_, _, cx| {
-                                remove_session.update(cx, |state, cx| {
-                                    state.forget_device(id.clone());
-                                    cx.notify();
-                                });
-                            }),
-                    ),
+                Button::new(("saved-headset", index))
+                    .ghost()
+                    .selected(selected)
+                    .h(px(64.))
+                    .p_0()
+                    .w_full()
+                    .min_w_0()
+                    .disabled(blocked)
+                    .accessibility_label(format!("{} {name}", language.text("Select", "选择")))
+                    .child(card(
+                        name,
+                        status,
+                        color,
+                        battery,
+                        gui_product_images::model_key(state, Some(&id)),
+                        cx,
+                    ))
+                    .on_click(move |_, _, cx| {
+                        select_session.update(cx, |state, cx| {
+                            state.select_saved_device(select_id.clone());
+                            cx.notify();
+                        });
+                        close_picker(&select_view, cx);
+                    }),
             );
         }
     }
@@ -380,11 +360,15 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
             .border_t_1()
             .border_color(cx.theme().border)
             .flex()
+            .items_center()
             .gap_2()
             .when(adding, |row| {
                 row.child(
                     Button::new("device-picker-back")
                         .ghost()
+                        .flex_1()
+                        .min_w_0()
+                        .h(px(32.))
                         .label(language.text("Back", "返回"))
                         .on_click(move |_, _, cx| {
                             back_session.update(cx, |state, cx| {
@@ -397,11 +381,14 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
             .child(
                 Button::new("device-picker-add")
                     .ghost()
-                    .w_full()
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(32.))
+                    .when(!adding, |button| button.icon(IconName::Plus))
                     .label(if adding {
                         language.text("Refresh", "刷新")
                     } else {
-                        language.text("+ Add headphones", "+ 添加耳机")
+                        language.text("Add headphones", "添加耳机")
                     })
                     .disabled(blocked || state.discovering)
                     .on_click(move |_, _, cx| {

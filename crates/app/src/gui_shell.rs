@@ -3,6 +3,7 @@ use crate::{
     Desktop, Session,
     desktop_integration::{self, DesktopEvent, Instance, ScreenPoint, TrayService},
     gui_theme,
+    notices::Severity,
     preferences::{self, Language, Preferences, ThemeMode},
 };
 use gpui_kit::{prelude::*, *};
@@ -29,8 +30,21 @@ pub(super) struct Shell {
 }
 impl Global for Shell {}
 gpui_kit::assets::icon_assets!(
-    NavigationIcons,
-    [Headphones, SlidersHorizontal, Sparkles, Activity]
+    AppIcons,
+    [
+        Headphones,
+        SlidersHorizontal,
+        Sparkles,
+        Activity,
+        Link,
+        RefreshCw,
+        Unlink,
+        Trash,
+        Plus,
+        TriangleAlert,
+        CircleAlert,
+        X
+    ]
 );
 struct Assets;
 impl AssetSource for Assets {
@@ -48,7 +62,7 @@ impl AssetSource for Assets {
         };
         if let Some(bytes) = local {
             Ok(Some(Cow::Borrowed(bytes)))
-        } else if let Some(icon) = NavigationIcons.load(path)? {
+        } else if let Some(icon) = AppIcons.load(path)? {
             Ok(Some(icon))
         } else {
             gpui_kit::assets::Assets.load(path)
@@ -194,7 +208,32 @@ pub(super) fn run() {
             });
         }
         if let Some(warning) = warning {
-            session.update(cx, |s, _| s.message = warning);
+            session.update(cx, |state, _| {
+                state.show_notice(Severity::Warning, warning.clone());
+                state.message = warning;
+            });
+        }
+        if preview {
+            let notice = args.iter().find_map(|arg| match arg.as_str() {
+                "--preview-notice=warning" => Some(Severity::Warning),
+                "--preview-notice=error" => Some(Severity::Error),
+                _ => None,
+            });
+            if let Some(severity) = notice {
+                session.update(cx, |state, _| {
+                    let message = match severity {
+                        Severity::Warning => state.preferences.language.text(
+                            "The headset adjusted the requested setting. Review the current value.",
+                            "耳机调整了请求的设置，请检查当前值。",
+                        ),
+                        Severity::Error => state.preferences.language.text(
+                            "Could not connect to the headphones. Check Bluetooth and try again.",
+                            "无法连接耳机，请检查蓝牙连接后重试。",
+                        ),
+                    };
+                    state.show_notice(severity, message.into());
+                });
+            }
         }
         cx.set_global(Shell {
             session: session.clone(),
@@ -452,10 +491,28 @@ fn handle_event(event: DesktopEvent, cx: &mut App) {
             {
                 return;
             }
+            let previous_error = cx.global::<Shell>().tray_error.clone();
+            let reason = if available {
+                None
+            } else {
+                Some(reason.unwrap_or_else(|| {
+                    cx.global::<Shell>()
+                        .session
+                        .read(cx)
+                        .preferences
+                        .language
+                        .text(
+                            "Keep the main window open to access the app.",
+                            "请保留主窗口，以便继续访问应用。",
+                        )
+                        .into()
+                }))
+            };
             cx.update_global::<Shell, _>(|s, _| {
                 s.tray_available = available;
                 s.tray_error = reason;
             });
+            report_tray_warning(previous_error, cx);
             if !available {
                 cx.global_mut::<Shell>().background_requested = false;
                 if cx.global::<Shell>().main.is_none() {
@@ -504,6 +561,7 @@ pub(super) fn refresh_tray(cx: &mut App) {
         }
         return;
     }
+    let previous_error = cx.global::<Shell>().tray_error.clone();
     cx.update_global::<Shell, _>(|shell, _| {
         let result = if let Some(tray) = &mut shell.tray {
             tray.update(menu)
@@ -516,6 +574,7 @@ pub(super) fn refresh_tray(cx: &mut App) {
             shell.tray_error = Some(error);
         }
     });
+    report_tray_warning(previous_error, cx);
     if cx.global::<Shell>().tray_error.is_some() {
         cx.global_mut::<Shell>().background_requested = false;
         if cx.global::<Shell>().main.is_none() {
@@ -523,6 +582,29 @@ pub(super) fn refresh_tray(cx: &mut App) {
         }
     }
 }
+
+fn report_tray_warning(previous: Option<String>, cx: &mut App) {
+    let shell = cx.global::<Shell>();
+    if shell.tray_error == previous {
+        return;
+    }
+    let Some(error) = shell.tray_error.clone() else {
+        return;
+    };
+    let session = shell.session.clone();
+    session.update(cx, |state, cx| {
+        let message = format!(
+            "{}: {error}",
+            state
+                .preferences
+                .language
+                .text("System tray unavailable", "系统托盘不可用")
+        );
+        state.show_notice(Severity::Warning, message);
+        cx.notify();
+    });
+}
+
 pub(super) fn change_preferences(cx: &mut App, change: impl FnOnce(&mut Preferences)) {
     if cx.global::<Shell>().saving_preferences {
         return;
@@ -583,6 +665,7 @@ pub(super) fn change_preferences(cx: &mut App, change: impl FnOnce(&mut Preferen
                             .language
                             .text("Preferences saved.", "首选项已保存。")
                             .into();
+                        state.record_activity(state.message.clone());
                         if language_changed {
                             state.refresh_display_language(cx);
                         }
@@ -603,6 +686,7 @@ pub(super) fn change_preferences(cx: &mut App, change: impl FnOnce(&mut Preferen
                             .language
                             .text("Could not save preferences", "无法保存首选项")
                     );
+                    state.show_notice(Severity::Error, state.message.clone());
                     cx.notify();
                 }),
             }
