@@ -10,13 +10,19 @@ fn entry_path() -> Result<PathBuf, String> {
         .filter(|path| path.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")))
         .ok_or_else(|| "The user configuration directory is unavailable".to_owned())?;
-    Ok(config.join("autostart/easy-sound-connect.desktop"))
+    Ok(config
+        .join("autostart")
+        .join(format!("{}.desktop", app::APP_ID)))
 }
 
 #[cfg(target_os = "macos")]
 fn entry_path() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
-        .map(|p| PathBuf::from(p).join("Library/LaunchAgents/io.github.easy-sound-connect.plist"))
+        .map(|p| {
+            PathBuf::from(p)
+                .join("Library/LaunchAgents")
+                .join(format!("{}.plist", app::APP_ID))
+        })
         .ok_or_else(|| "The user library directory is unavailable".to_owned())
 }
 
@@ -90,7 +96,9 @@ fn entry_contents(executable: &str) -> Result<String, String> {
         }
     }
     Ok(format!(
-        "[Desktop Entry]\nType=Application\nName=Easy Sound Connect\nExec=\"{quoted}\" --background\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
+        "[Desktop Entry]\nType=Application\nName={}\nExec=\"{quoted}\" --background\nTerminal=false\nStartupWMClass={}\nX-GNOME-Autostart-enabled=true\n",
+        app::APP_NAME,
+        app::APP_ID,
     ))
 }
 
@@ -106,14 +114,15 @@ fn entry_contents(executable: &str) -> Result<String, String> {
         .replace('"', "&quot;")
         .replace('\'', "&apos;");
     Ok(format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>io.github.easy-sound-connect</string><key>ProgramArguments</key><array><string>{path}</string><string>--background</string></array><key>RunAtLoad</key><true/></dict></plist>\n"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>{}</string><key>ProgramArguments</key><array><string>{path}</string><string>--background</string></array><key>RunAtLoad</key><true/></dict></plist>\n",
+        app::APP_ID,
     ))
 }
 
 #[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
-const ENTRY_NAME: &str = "EasySoundConnect";
+const ENTRY_NAME: &str = app::APP_ID;
 
 #[cfg(windows)]
 pub fn autostart_enabled() -> Result<bool, String> {
@@ -158,6 +167,8 @@ mod tests {
     fn login_command_quotes_paths_and_literal_field_codes() {
         let content = entry_contents("/opt/Sound Connect/100%/ezsc").unwrap();
         assert!(content.contains("Exec=\"/opt/Sound Connect/100%%/ezsc\" --background\n"));
+        assert!(content.contains("Name=Easy Sound Connect\n"));
+        assert!(content.contains("StartupWMClass=com.jjl9807.ezsc\n"));
         assert!(!content.contains("KeepAlive"));
         assert!(entry_contents("/tmp/bad\ncommand").is_err());
     }

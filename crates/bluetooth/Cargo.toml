@@ -3,7 +3,7 @@ name = "bluetooth"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Native ordered Bluetooth control transports for easy-sound-connect"
+description = "Native ordered Bluetooth control transports for Easy Sound Connect"
 readme = "README.md"
 
 [dependencies]

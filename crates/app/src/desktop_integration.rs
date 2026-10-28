@@ -128,17 +128,51 @@ fn action(events: &mpsc::Sender<DesktopEvent>, event: DesktopEvent) {
 /// permissions and desktop service failures remain visible to the caller.
 pub async fn notify(summary: String, body: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || {
-        notify_rust::Notification::new()
-            .appname("Easy Sound Connect")
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        prepare_notification_identity()?;
+
+        let mut notification = notify_rust::Notification::new();
+        notification
+            .appname(app::APP_NAME)
             .summary(&summary)
             .body(&body)
-            .timeout(6000)
+            .timeout(6000);
+        #[cfg(target_os = "linux")]
+        notification.hint(notify_rust::Hint::DesktopEntry(app::APP_ID.into()));
+        #[cfg(target_os = "windows")]
+        notification.app_id(app::APP_ID);
+        notification
             .show()
             .map(|_| ())
             .map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn prepare_notification_identity() -> Result<(), String> {
+    // macOS accepts its application identity only once. Cache failures too,
+    // so retries preserve the original error rather than reporting AlreadySet.
+    static IDENTITY: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    IDENTITY
+        .get_or_init(|| {
+            #[cfg(target_os = "windows")]
+            {
+                // Unpackaged desktop apps need a registered display name for
+                // their own AUMID; never fall back to another application's ID.
+                winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+                    .create_subkey(format!(r"Software\Classes\AppUserModelId\{}", app::APP_ID))
+                    .and_then(|(key, _)| key.set_value("DisplayName", &app::APP_NAME))
+                    .map_err(|error| format!("Unable to register notification identity: {error}"))
+            }
+            #[cfg(target_os = "macos")]
+            {
+                notify_rust::set_application(app::APP_ID)
+                    .map_err(|error| format!("Unable to select notification identity: {error}"))
+            }
+        })
+        .clone()
 }
 
 #[cfg(test)]

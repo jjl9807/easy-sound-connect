@@ -144,10 +144,10 @@ struct StatusItem {
 
 impl Tray for StatusItem {
     fn id(&self) -> String {
-        "easy-sound-connect".into()
+        app::APP_ID.into()
     }
     fn title(&self) -> String {
-        "Easy Sound Connect".into()
+        app::APP_NAME.into()
     }
     fn activate(&mut self, x: i32, y: i32) {
         let hint = (x != 0 || y != 0).then_some(ScreenPoint {
@@ -162,7 +162,7 @@ impl Tray for StatusItem {
         action(&self.events, DesktopEvent::OpenMain);
     }
     fn icon_name(&self) -> String {
-        HostIcon::NAME.into()
+        HostIcon::name()
     }
     fn icon_theme_path(&self) -> String {
         self.icon.theme_path.clone()
@@ -176,7 +176,7 @@ impl Tray for StatusItem {
     }
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
-            title: "Easy Sound Connect".into(),
+            title: app::APP_NAME.into(),
             ..Default::default()
         }
     }
@@ -228,17 +228,20 @@ struct HostIcon {
 }
 
 impl HostIcon {
-    const NAME: &str = "easy-sound-connect-symbolic";
     const SVG: &[u8] = include_bytes!("../../assets/tray_icon_symbolic.svg");
+
+    fn name() -> String {
+        format!("{}-symbolic", app::APP_ID)
+    }
 
     fn new() -> Result<Self, String> {
         let directory = tempfile::Builder::new()
-            .prefix("easy-sound-connect-")
+            .prefix(&format!("{}-", app::APP_ID))
             .tempdir()
             .map_err(|error| error.to_string())?;
         let icons = directory.path().join("icons");
         std::fs::create_dir(&icons).map_err(|error| error.to_string())?;
-        std::fs::write(icons.join(format!("{}.svg", Self::NAME)), Self::SVG)
+        std::fs::write(icons.join(format!("{}.svg", Self::name())), Self::SVG)
             .map_err(|error| error.to_string())?;
         let theme_path = icons
             .to_str()
@@ -312,7 +315,7 @@ mod tests {
     #[test]
     fn named_icon_is_readable_for_the_service_lifetime_and_keeps_the_supplied_shape() {
         let icon = HostIcon::new().unwrap();
-        let path = std::path::Path::new(&icon.theme_path).join(format!("{}.svg", HostIcon::NAME));
+        let path = std::path::Path::new(&icon.theme_path).join(format!("{}.svg", HostIcon::name()));
         assert_eq!(std::fs::read(&path).unwrap(), HostIcon::SVG);
         let supplied = super::super::icon_rgba(false, 32).unwrap();
         let symbolic = render_icon(HostIcon::SVG, 32).unwrap();

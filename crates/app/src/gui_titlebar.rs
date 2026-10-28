@@ -12,7 +12,7 @@ pub(super) fn window_options() -> WindowOptions {
         // Keep native window semantics and macOS traffic lights while allowing
         // the application content to extend through the title-bar area.
         titlebar: Some(TitlebarOptions {
-            title: Some("Easy Sound Connect".into()),
+            title: Some(app::APP_NAME.into()),
             appears_transparent: true,
             traffic_light_position: None,
         }),

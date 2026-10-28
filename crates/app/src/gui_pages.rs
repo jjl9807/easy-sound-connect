@@ -534,7 +534,7 @@ impl Desktop {
                     .ghost()
                     .on_click(cx.listener(|view, _, _, cx| {
                         let state = view.session.read(cx);
-                        let mut text = String::from("Easy Sound Connect diagnostics\n");
+                        let mut text = format!("{} diagnostics\n", app::APP_NAME);
                         if let Some(snapshot) = &state.snapshot {
                             text.push_str(&app::snapshot_lines(snapshot).join("\n"));
                         }
@@ -753,7 +753,7 @@ impl Desktop {
                 div()
                     .text_size(px(28.))
                     .font_weight(FontWeight::BOLD)
-                    .child("Easy Sound Connect"),
+                    .child(app::APP_NAME),
             )
             .child(caption(
                 format!(
@@ -803,7 +803,7 @@ impl Desktop {
                 )
                 .text_center(),
             )
-            .child(caption("Easy Sound Connect · MIT", cx).text_size(px(11.)))
+            .child(caption(format!("{} · MIT", app::APP_NAME), cx).text_size(px(11.)))
             .child(caption("GPUI / GPUI Kit · Apache-2.0     Lucide · ISC", cx).text_size(px(11.)))
     }
 }

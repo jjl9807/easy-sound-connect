@@ -1,4 +1,9 @@
-//! Presentation helpers shared by the desktop window and connection probe.
+//! Application identity and presentation helpers shared by the desktop and probe.
+
+/// User-visible product name, independent of platform and language.
+pub const APP_NAME: &str = "Easy Sound Connect";
+/// Desktop application ID, also used by distribution and login registrations.
+pub const APP_ID: &str = "com.jjl9807.ezsc";
 
 use ezsc_core::{
     AudioCodecState, BatteryComponent, ConnectionState, DeviceSnapshot, Freshness,

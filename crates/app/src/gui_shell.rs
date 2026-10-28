@@ -149,6 +149,7 @@ pub(super) fn run() {
         .with_quit_mode(QuitMode::Explicit);
     application.on_reopen(open_main);
     application.run(move |cx| {
+        cx.set_app_identity(app::APP_ID, app::APP_NAME);
         gpui_kit::init(cx);
         gpui_kit::component::set_locale(prefs.language.locale());
         gui_theme::apply(prefs.theme, cx);
@@ -339,10 +340,11 @@ fn show_main(cx: &mut App) {
             cx,
         ))),
         window_min_size: Some(size(px(920.), px(640.))),
-        app_id: Some("io.github.jjl9807.easy-sound-connect".into()),
+        app_id: Some(app::APP_ID.into()),
         ..crate::gui_titlebar::window_options()
     };
     match gpui_kit::open_window(options, cx, |window, cx| {
+        window.set_window_title(app::APP_NAME);
         cx.new(|cx| Desktop::new(session, false, window, cx))
     }) {
         Ok((handle, view)) => {
@@ -476,11 +478,11 @@ fn open_panel(anchor: Option<ScreenPoint>, cx: &mut App) {
         },
         window_decorations: cfg!(target_os = "linux").then_some(WindowDecorations::Client),
         display_id: display.map(|d| d.id()),
-        app_id: Some("io.github.jjl9807.easy-sound-connect".into()),
+        app_id: Some(app::APP_ID.into()),
         ..Default::default()
     };
     match gpui_kit::open_window(options, cx, |window, cx| {
-        window.set_window_title("Easy Sound Connect — Quick controls");
+        window.set_window_title(app::APP_NAME);
         cx.new(|cx| Desktop::new(session, true, window, cx))
     }) {
         Ok((handle, _)) => {
@@ -784,9 +786,7 @@ pub(super) fn session_changed(cx: &mut App) {
         }
     }
     if notifications && (new_prompt || disconnected) {
-        let summary = l
-            .text("Easy Sound Connect", "Easy Sound Connect")
-            .to_owned();
+        let summary = app::APP_NAME.to_owned();
         let body = if new_prompt {
             l.text(
                 "Your headphones need confirmation. Open the app to review.",

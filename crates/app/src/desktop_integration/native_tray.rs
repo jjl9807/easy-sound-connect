@@ -65,11 +65,11 @@ impl NativeTray {
                 }
             }));
         });
-        let id = format!("ezsc-tray-{generation}");
+        let id = format!("{}-tray-{generation}", app::APP_ID);
         let menu = native_menu(&id, &appearance.menu)?;
         let builder = TrayIconBuilder::new()
             .with_id(id.clone())
-            .with_tooltip("Easy Sound Connect")
+            .with_tooltip(app::APP_NAME)
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false);
         #[cfg(target_os = "windows")]
@@ -129,7 +129,7 @@ impl NativeTray {
         // ready. NIM_MODIFY checks whether the icon is actually registered; it
         // also detects Explorer exit without relying on the overflow geometry.
         #[cfg(target_os = "windows")]
-        let status = self.icon.set_tooltip(Some("Easy Sound Connect"));
+        let status = self.icon.set_tooltip(Some(app::APP_NAME));
         #[cfg(target_os = "macos")]
         let status: Result<(), tray_icon::Error> = Ok(());
         let available = status.is_ok();

@@ -1,6 +1,8 @@
-# easy-sound-connect
+# Easy Sound Connect
 
-easy-sound-connect (ezsc) is a Rust desktop client for SONY MDR v2 headphones, with native Bluetooth transports and a shared GPUI interface. The client is under development; device and platform compatibility requires hardware validation.
+Easy Sound Connect (ezsc) is a Rust desktop client for SONY MDR v2 headphones, with native Bluetooth transports and a shared GPUI interface. The client is under development; device and platform compatibility requires hardware validation.
+
+The product display name is **Easy Sound Connect** and the desktop application identifier is **`com.jjl9807.ezsc`**. Window grouping, desktop entries, login registrations and notification identities use this identifier. Distribution metadata must use the same values; see [packaging metadata](packaging/README.md).
 
 ## Workspace
 

@@ -157,7 +157,10 @@ async fn wake_existing(directory: &Path) -> Result<(), String> {
             Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
     }
-    Err("Another Easy Sound Connect instance owns the session but cannot be activated".into())
+    Err(format!(
+        "Another {} instance owns the session but cannot be activated",
+        app::APP_NAME
+    ))
 }
 
 #[cfg(windows)]
@@ -165,7 +168,7 @@ fn pipe_name(directory: &Path) -> String {
     use std::hash::{Hash, Hasher};
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     directory.hash(&mut hash);
-    format!(r"\\.\pipe\ezsc-{:016x}", hash.finish())
+    format!(r"\\.\pipe\{}-{:016x}", app::APP_ID, hash.finish())
 }
 
 #[cfg(windows)]
@@ -205,7 +208,10 @@ async fn wake_existing(directory: &Path) -> Result<(), String> {
             Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
         }
     }
-    Err("Another Easy Sound Connect instance owns the session but cannot be activated".into())
+    Err(format!(
+        "Another {} instance owns the session but cannot be activated",
+        app::APP_NAME
+    ))
 }
 
 #[cfg(all(test, unix))]

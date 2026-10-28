@@ -1,6 +1,6 @@
 # core
 
-Device sessions and shared state for easy-sound-connect. The Cargo package is named `core`; its Rust library is named `ezsc_core` to avoid shadowing Rust's standard `core` crate. It depends on the platform transport contract in `bluetooth` and the platform-independent MDR v2 codecs and session state machine in `libmdr2`.
+Device sessions and shared state for Easy Sound Connect. The Cargo package is named `core`; its Rust library is named `ezsc_core` to avoid shadowing Rust's standard `core` crate. It depends on the platform transport contract in `bluetooth` and the platform-independent MDR v2 codecs and session state machine in `libmdr2`.
 
 ## Connecting and observing state
 

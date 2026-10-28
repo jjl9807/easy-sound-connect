@@ -136,7 +136,7 @@ impl LinuxBackend {
             .session
             .register_profile(rfcomm::Profile {
                 uuid: uuid(RFCOMM_SERVICE),
-                name: Some("easy-sound-connect MDR v2".into()),
+                name: Some("Easy Sound Connect".into()),
                 role: Some(rfcomm::Role::Client),
                 require_authentication: Some(true),
                 require_authorization: Some(false),
