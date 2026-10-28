@@ -1,4 +1,4 @@
-//! Read-only headset information and application actions for native tray hosts.
+//! Application actions for native tray hosts.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
@@ -7,8 +7,7 @@ pub enum MenuAction {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MenuEntry {
-    Info(String),
-    Action { label: String, action: MenuAction },
-    Separator,
+pub struct MenuEntry {
+    pub label: String,
+    pub action: MenuAction,
 }

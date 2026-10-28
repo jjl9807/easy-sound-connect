@@ -195,39 +195,27 @@ impl Tray for StatusItem {
     }
 }
 
-// Querying the menu and activating its informational rows are read-only.
+// Querying the menu is read-only; only explicit activation dispatches an action.
 fn native_menu(entries: &[MenuEntry]) -> Vec<ksni::MenuItem<StatusItem>> {
     entries
         .iter()
-        .map(|entry| match entry {
-            MenuEntry::Info(label) => ksni::menu::StandardItem {
-                label: menu_label(label),
-                enabled: false,
+        .map(|entry| {
+            let command = entry.action;
+            ksni::menu::StandardItem {
+                label: menu_label(&entry.label),
+                activate: Box::new(move |tray: &mut StatusItem| {
+                    action(&tray.events, DesktopEvent::Menu(command));
+                }),
                 ..Default::default()
             }
-            .into(),
-            MenuEntry::Separator => ksni::MenuItem::Separator,
-            MenuEntry::Action {
-                label,
-                action: command,
-            } => {
-                let command = *command;
-                ksni::menu::StandardItem {
-                    label: menu_label(label),
-                    activate: Box::new(move |tray: &mut StatusItem| {
-                        action(&tray.events, DesktopEvent::Menu(command));
-                    }),
-                    ..Default::default()
-                }
-                .into()
-            }
+            .into()
         })
         .collect()
 }
 
 fn menu_label(label: &str) -> String {
-    // D-Bus menus treat a single underscore as a mnemonic marker. Device text
-    // must remain literal, including user-supplied underscores.
+    // D-Bus menus treat a single underscore as a mnemonic marker. Labels must
+    // retain literal underscores.
     label.replace('_', "__")
 }
 
@@ -277,7 +265,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_menu_information_is_inert_and_application_actions_dispatch() {
+    fn native_menu_query_is_inert_and_only_application_actions_dispatch() {
         use super::super::MenuAction;
 
         let (events, mut received) = mpsc::channel(4);
@@ -285,12 +273,11 @@ mod tests {
         let mut tray = StatusItem {
             appearance: Appearance {
                 menu: vec![
-                    MenuEntry::Info("🎧 Test_headset".into()),
-                    MenuEntry::Action {
-                        label: "Open app".into(),
+                    MenuEntry {
+                        label: "Open_main window".into(),
                         action: MenuAction::OpenMain,
                     },
-                    MenuEntry::Action {
+                    MenuEntry {
                         label: "Quit".into(),
                         action: MenuAction::Quit,
                     },
@@ -304,18 +291,15 @@ mod tests {
         tray.menu_about_to_show();
         let menu = tray.menu();
         assert!(received.try_recv().is_err());
-        let ksni::MenuItem::Standard(info) = &menu[0] else {
-            panic!("expected an informational row");
-        };
-        assert_eq!(info.label, "🎧 Test__headset");
-        assert!(!info.enabled);
-        (info.activate)(&mut tray);
-        assert!(received.try_recv().is_err());
-
-        for (index, expected) in [(1, MenuAction::OpenMain), (2, MenuAction::Quit)] {
+        assert_eq!(menu.len(), 2);
+        for (index, label, expected) in [
+            (0, "Open__main window", MenuAction::OpenMain),
+            (1, "Quit", MenuAction::Quit),
+        ] {
             let ksni::MenuItem::Standard(item) = &menu[index] else {
                 panic!("expected an application action");
             };
+            assert_eq!(item.label, label);
             assert!(item.enabled);
             (item.activate)(&mut tray);
             assert!(

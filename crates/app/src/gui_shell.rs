@@ -545,7 +545,7 @@ pub(super) fn refresh_tray(cx: &mut App) {
     let prefs = state.preferences.clone();
     let runtime = state.runtime.clone();
     let preview = state.preview;
-    let menu = crate::gui_tray_menu::build(state.snapshot.as_ref(), prefs.language);
+    let menu = crate::gui_tray_menu::build(prefs.language);
     if preview && !cx.global::<Shell>().preview_tray {
         return;
     }

@@ -3,7 +3,7 @@ use std::sync::{Mutex, Once};
 use tokio::{runtime::Handle, sync::mpsc};
 use tray_icon::{
     MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuEvent, MenuItem},
 };
 
 static INSTALL_HANDLERS: Once = Once::new();
@@ -166,29 +166,18 @@ impl Drop for NativeTray {
 
 fn native_menu(id: &str, entries: &[MenuEntry]) -> Result<Menu, String> {
     let menu = Menu::new();
-    for (index, entry) in entries.iter().enumerate() {
-        let result = match entry {
-            MenuEntry::Info(label) => menu.append(&MenuItem::with_id(
-                format!("{id}-info-{index}"),
-                label.replace('&', "&&"),
-                false,
-                None,
-            )),
-            MenuEntry::Action { label, action } => {
-                let suffix = match action {
-                    MenuAction::OpenMain => "main",
-                    MenuAction::Quit => "quit",
-                };
-                menu.append(&MenuItem::with_id(
-                    format!("{id}-{suffix}"),
-                    label.replace('&', "&&"),
-                    true,
-                    None,
-                ))
-            }
-            MenuEntry::Separator => menu.append(&PredefinedMenuItem::separator()),
+    for entry in entries {
+        let suffix = match entry.action {
+            MenuAction::OpenMain => "main",
+            MenuAction::Quit => "quit",
         };
-        result.map_err(|error| error.to_string())?;
+        menu.append(&MenuItem::with_id(
+            format!("{id}-{suffix}"),
+            entry.label.replace('&', "&&"),
+            true,
+            None,
+        ))
+        .map_err(|error| error.to_string())?;
     }
     Ok(menu)
 }
