@@ -6,6 +6,8 @@ mod desktop_integration;
 mod device_status;
 mod gui_app_logo;
 mod gui_controls;
+#[cfg(test)]
+mod gui_controls_tests;
 mod gui_daily_controls;
 mod gui_device_picker;
 mod gui_device_prompts;

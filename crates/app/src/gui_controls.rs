@@ -57,6 +57,24 @@ pub(super) async fn refresh_controls(handle: &DeviceHandle) -> Result<(), String
             if handle.snapshot().connection != ConnectionState::Ready {
                 return Err(failures.join("; "));
             }
+            continue;
+        }
+        // Refreshing the capability may invalidate cached labels when the band
+        // layout changes. Read metadata once for the current layout, even when
+        // editing EQ is temporarily unavailable.
+        let needs_labels = handle.snapshot().equalizers.iter().any(|current| {
+            current.kind == entry.kind
+                && current.band_info.is_none()
+                && current
+                    .capability
+                    .as_ref()
+                    .is_some_and(|capability| capability.band_count() > 0)
+        });
+        if needs_labels && let Err(error) = handle.refresh_equalizer_band_info(entry.kind).await {
+            failures.push(format!("Equalizer frequency labels: {error}"));
+            if handle.snapshot().connection != ConnectionState::Ready {
+                return Err(failures.join("; "));
+            }
         }
     }
     for entry in snapshot.audio {
@@ -94,7 +112,6 @@ pub(super) enum ControlAction {
         index: usize,
         value: u8,
     },
-    BandInfo(EqualizerKind),
 }
 impl ControlAction {
     fn target(self) -> OperationTarget {
@@ -102,9 +119,7 @@ impl ControlAction {
             Self::Noise(kind, _) => OperationTarget::Noise(kind),
             Self::Audio(kind, _) => OperationTarget::Audio(kind),
             Self::System(kind, _) => OperationTarget::System(kind),
-            Self::Preset(kind, _) | Self::Band { kind, .. } | Self::BandInfo(kind) => {
-                OperationTarget::Equalizer(kind)
-            }
+            Self::Preset(kind, _) | Self::Band { kind, .. } => OperationTarget::Equalizer(kind),
         }
     }
 
@@ -216,9 +231,7 @@ impl Session {
                 .iter()
                 .find(|entry| entry.kind == kind)
                 .is_some_and(|entry| system_change_ready(entry, change)),
-            ControlAction::Preset(kind, _)
-            | ControlAction::Band { kind, .. }
-            | ControlAction::BandInfo(kind) => snapshot
+            ControlAction::Preset(kind, _) | ControlAction::Band { kind, .. } => snapshot
                 .equalizers
                 .iter()
                 .find(|entry| entry.kind == kind)
@@ -258,7 +271,6 @@ impl Session {
                     index,
                     value,
                 } => handle.set_equalizer_band(kind, preset, index, value).await,
-                ControlAction::BandInfo(kind) => handle.refresh_equalizer_band_info(kind).await,
             }
             .map_err(|error| error.to_string());
             let _ = sender.send(Event::Operation(epoch, label, result)).await;
@@ -1058,17 +1070,6 @@ impl Desktop {
                     .overflow_x_scroll()
                     .child(chart),
             );
-            if entry.band_info.is_none() {
-                section = section.child(control_button(
-                    ("eq-labels", index),
-                    language.text("Read frequency labels", "读取频率标签"),
-                    enabled,
-                    false,
-                    ControlAction::BandInfo(kind),
-                    self.session.clone(),
-                    cx,
-                ));
-            }
             cards = cards.child(section);
         }
         cards
