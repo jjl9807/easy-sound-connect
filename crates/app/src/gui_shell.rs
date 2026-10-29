@@ -249,20 +249,17 @@ pub(super) fn run() {
         }
         if preview {
             session.update(cx, |session, _| {
-                session.message = session
-                    .preferences
-                    .language
-                    .text(
-                        "Preview · Device controls are disabled",
-                        "预览 · 设备控制已禁用",
-                    )
-                    .into();
+                session.message = session.preferences.language.tr("shell.preview");
             });
         }
         if let Some(warning) = warning {
             session.update(cx, |state, _| {
-                state.show_notice(Severity::Warning, warning.clone());
-                state.message = warning;
+                let message = state
+                    .preferences
+                    .language
+                    .tr_args("shell.preferences_load_failed", &[("error", warning)]);
+                state.show_notice(Severity::Warning, message.clone());
+                state.message = message;
             });
         }
         if preview {
@@ -274,16 +271,15 @@ pub(super) fn run() {
             if let Some(severity) = notice {
                 session.update(cx, |state, _| {
                     let message = match severity {
-                        Severity::Warning => state.preferences.language.text(
-                            "The headset adjusted the requested setting. Review the current value.",
-                            "耳机调整了请求的设置，请检查当前值。",
-                        ),
-                        Severity::Error => state.preferences.language.text(
-                            "Could not connect to the headphones. Check Bluetooth and try again.",
-                            "无法连接耳机，请检查蓝牙连接后重试。",
-                        ),
+                        Severity::Warning => {
+                            state.preferences.language.tr("shell.preview_adjusted")
+                        }
+                        Severity::Error => state
+                            .preferences
+                            .language
+                            .tr("shell.preview_connection_failed"),
                     };
-                    state.show_notice(severity, message.into());
+                    state.show_notice(severity, message);
                 });
             }
         }
@@ -438,22 +434,19 @@ fn show_font_warning(_cx: &mut App) {
         let Some(main) = shell.main else {
             return;
         };
-        let language = shell.session.read(cx).preferences.language;
         let _ = main.update(cx, |_, window, cx| {
             cx.global_mut::<Shell>().font_warning_pending = false;
             window.open_alert_dialog(cx, move |alert, _, cx| {
+                let language = cx.global::<Shell>().session.read(cx).preferences.language;
                 alert
                     .icon(
                         Icon::new(IconName::TriangleAlert)
                             .size(px(28.))
                             .text_color(cx.theme().warning),
                     )
-                    .title(language.text("Source Han Sans unavailable", "思源黑体不可用"))
-                    .description(language.text(
-                        "Using the existing font fallback. Chinese text and bold weights may appear inconsistent. Install static Source Han Sans fonts (Regular, Medium and Bold), then restart the app.",
-                        "已使用备用字体，中文与粗体显示可能不一致。请安装思源黑体静态字体（Regular、Medium 和 Bold），然后重启应用。",
-                    ))
-                    .ok_text(language.text("OK", "知道了"))
+                    .title(language.tr("shell.source_han_sans_unavailable"))
+                    .description(language.tr("shell.font_warning"))
+                    .ok_text(language.tr("shell.ok"))
             });
         });
     }
@@ -601,11 +594,7 @@ fn handle_event(event: DesktopEvent, cx: &mut App) {
                         .read(cx)
                         .preferences
                         .language
-                        .text(
-                            "Keep the main window open to access the app.",
-                            "请保留主窗口，以便继续访问应用。",
-                        )
-                        .into()
+                        .tr("shell.keep_window_open")
                 }))
             };
             cx.update_global::<Shell, _>(|s, _| {
@@ -696,12 +685,9 @@ fn report_tray_warning(previous: Option<String>, cx: &mut App) {
     };
     let session = shell.session.clone();
     session.update(cx, |state, cx| {
-        let message = format!(
-            "{}: {error}",
-            state
-                .preferences
-                .language
-                .text("System tray unavailable", "系统托盘不可用")
+        let message = state.preferences.language.tr_args(
+            "shell.system_tray_unavailable",
+            &[("error", error.to_string())],
         );
         state.show_notice(Severity::Warning, message);
         cx.notify();
@@ -740,8 +726,9 @@ pub(super) fn change_preferences(cx: &mut App, change: impl FnOnce(&mut Preferen
                             && let Err(rollback) =
                                 desktop_integration::set_autostart(old.start_at_login)
                         {
-                            return Err(format!(
-                                "{error}; could not restore login startup: {rollback}"
+                            return Err(saved.language.tr_args(
+                                "shell.autostart_rollback_failed",
+                                &[("error", error.to_string()), ("rollback", rollback)],
                             ));
                         }
                         return Err(error.to_string());
@@ -764,10 +751,7 @@ pub(super) fn change_preferences(cx: &mut App, change: impl FnOnce(&mut Preferen
                     session.update(cx, |state, cx| {
                         let language_changed = state.preferences.language != next.language;
                         state.preferences = next.clone();
-                        state.message = next
-                            .language
-                            .text("Preferences saved.", "首选项已保存。")
-                            .into();
+                        state.message = next.language.tr("shell.preferences_saved");
                         state.record_activity(state.message.clone());
                         if language_changed {
                             state.refresh_display_language(cx);
@@ -782,12 +766,9 @@ pub(super) fn change_preferences(cx: &mut App, change: impl FnOnce(&mut Preferen
                     if let Some(enabled) = observed_autostart {
                         state.preferences.start_at_login = enabled;
                     }
-                    state.message = format!(
-                        "{}: {error}",
-                        state
-                            .preferences
-                            .language
-                            .text("Could not save preferences", "无法保存首选项")
+                    state.message = state.preferences.language.tr_args(
+                        "shell.could_not_save_preferences",
+                        &[("error", error.to_string())],
                     );
                     state.show_notice(Severity::Error, state.message.clone());
                     cx.notify();
@@ -834,15 +815,9 @@ pub(super) fn session_changed(cx: &mut App) {
     if notifications && (new_prompt || disconnected) {
         let summary = app::APP_NAME.to_owned();
         let body = if new_prompt {
-            l.text(
-                "Your headphones need confirmation. Open the app to review.",
-                "耳机需要你的确认，请打开应用查看。",
-            )
+            l.tr("shell.confirmation_notification")
         } else {
-            l.text(
-                "Headphone control connection ended.",
-                "耳机控制连接已断开。",
-            )
+            l.tr("shell.disconnection_notification")
         }
         .to_owned();
         runtime.spawn(async move {

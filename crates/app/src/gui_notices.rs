@@ -14,12 +14,12 @@ impl Desktop {
         let language = self.language(cx);
         let (title, icon, color) = match notice.severity {
             Severity::Warning => (
-                language.text("Warning", "警告"),
+                language.tr("ui.warning"),
                 IconName::TriangleAlert,
                 cx.theme().warning,
             ),
             Severity::Error => (
-                language.text("Error", "错误"),
+                language.tr("ui.error"),
                 IconName::CircleAlert,
                 cx.theme().danger,
             ),
@@ -59,8 +59,8 @@ impl Desktop {
                                 .icon(IconName::X)
                                 .w(px(20.))
                                 .h(px(20.))
-                                .accessibility_label(language.text("Dismiss message", "关闭消息"))
-                                .tooltip(language.text("Dismiss message", "关闭消息"))
+                                .accessibility_label(language.tr("ui.dismiss_message"))
+                                .tooltip(language.tr("ui.dismiss_message"))
                                 .on_click(cx.listener(move |view, _, _, cx| {
                                     view.session.update(cx, |state, cx| {
                                         state.notices.dismiss(id);
@@ -76,7 +76,7 @@ impl Desktop {
                         .h_auto()
                         .p_0()
                         .accessibility_label(notice.message.clone())
-                        .tooltip(language.text("View details in Activity", "在活动中查看详情"))
+                        .tooltip(language.tr("ui.view_activity_details"))
                         .child(
                             div()
                                 .w_full()
@@ -88,8 +88,8 @@ impl Desktop {
                                 .line_clamp(4)
                                 .child(notice.message.clone()),
                         )
-                        .on_click(cx.listener(|view, _, _, cx| {
-                            view.select_page(Page::Activity, cx);
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.select_page(Page::Activity, window, cx);
                         })),
                 ),
         )

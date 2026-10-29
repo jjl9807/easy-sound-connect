@@ -4,7 +4,7 @@ use app::device_prompts::PromptPresentation;
 use ezsc_core::{ConnectionState, PromptId, PromptReply};
 use gpui::{Context, Div, MouseButton, Window, div, prelude::*, px, rgba};
 
-use crate::{Desktop, Event, Session, button, preferences::Language};
+use crate::{Desktop, Event, Session, button};
 use gpui_kit::component::{ActiveTheme, Disableable};
 
 impl Session {
@@ -44,19 +44,10 @@ impl Session {
         self.prompt_error = None;
         let language = self.preferences.language;
         self.message = match reply {
-            PromptReply::Accept => language.text(
-                "Sending your confirmation to the headset…",
-                "正在向耳机发送确认…",
-            ),
-            PromptReply::Reject => language.text(
-                "Sending your cancellation to the headset…",
-                "正在向耳机发送取消请求…",
-            ),
-            PromptReply::Dismiss => {
-                language.text("Closing the device message…", "正在关闭耳机消息…")
-            }
-        }
-        .into();
+            PromptReply::Accept => language.tr("prompt.sending_confirmation"),
+            PromptReply::Reject => language.tr("prompt.sending_cancellation"),
+            PromptReply::Dismiss => language.tr("prompt.closing_message"),
+        };
         let sender = self.events.clone();
         let epoch = self.epoch;
         self.runtime.spawn(async move {
@@ -90,29 +81,32 @@ impl Desktop {
             }
             return None;
         };
-        let presentation =
-            PromptPresentation::from_prompt_localized(&prompt, language == Language::Chinese);
+        let presentation = PromptPresentation::from_prompt_localized(&prompt, language.locale());
         if self.prompt_seen != Some(prompt.id) || !self.prompt_focus.contains_focused(window, cx) {
             self.prompt_seen = Some(prompt.id);
             window.focus(&self.prompt_focus, cx);
         }
         let waiting = waiting_id == Some(prompt.id);
         let id = prompt.id;
-        let mut content = div().flex().flex_col().gap_3().child(presentation.body);
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(presentation.body.clone());
         if let Some((error_id, _)) = &prompt_error
             && *error_id == id
         {
             content = content.child(
                 div()
                     .text_color(cx.theme().danger)
-                    .child(language.text("The result could not be confirmed. Check the connection and the headset's current settings.", "未能确认操作结果。请检查连接和耳机的当前设置。")),
+                    .child(language.tr("prompt.result_unconfirmed")),
             );
         }
         if !presentation.affected_functions.is_empty() {
             content = content.child(
                 div()
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(language.text("Affected functions", "受影响的功能")),
+                    .child(language.tr("prompt.affected_functions")),
             );
             for item in &presentation.affected_functions {
                 content = content.child(format!("• {item}"));
@@ -124,10 +118,11 @@ impl Desktop {
             .justify_end()
             .gap_2()
             .flex_shrink_0();
-        for (index, action) in presentation.actions.iter().copied().enumerate() {
+        for (index, action) in presentation.actions.iter().enumerate() {
             let focus = self.prompt_action_focus[index].clone();
+            let reply = action.reply;
             actions = actions.child(
-                button(("device-prompt-action", index), action.label)
+                button(("device-prompt-action", index), action.label.clone())
                     .track_focus(&focus)
                     .border_1()
                     .border_color(cx.theme().border)
@@ -135,7 +130,7 @@ impl Desktop {
                     .on_click(cx.listener(move |view, _, window, cx| {
                         window.focus(&focus, cx);
                         view.session.update(cx, |session, cx| {
-                            session.respond_prompt(id, action.reply);
+                            session.respond_prompt(id, reply);
                             cx.notify();
                         });
                         cx.stop_propagation();
@@ -158,7 +153,7 @@ impl Desktop {
                 .bg(rgba(0x000000b8))
                 .occlude()
                 .role(gpui::accesskit::Role::Dialog)
-                .aria_label(presentation.title)
+                .aria_label(presentation.title.clone())
                 .track_focus(&self.prompt_focus)
                 .on_key_down(
                     cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
@@ -232,9 +227,9 @@ impl Desktop {
                         )
                         .when(waiting, |panel| {
                             panel.child(
-                                div().text_color(cx.theme().muted_foreground).child(
-                                    language.text("Waiting for the headset…", "正在等待耳机…"),
-                                ),
+                                div()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(language.tr("prompt.waiting")),
                             )
                         })
                         .child(actions),

@@ -7,6 +7,7 @@ use ezsc_core::ConnectionState;
 use gpui_kit::component::{
     ActiveTheme, Disableable, Sizable,
     button::{Button, ButtonVariants},
+    select::Select,
     switch::Switch,
 };
 use gpui_kit::{assets::IconName, prelude::*, *};
@@ -79,10 +80,10 @@ fn title(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-fn action_button(id: &'static str, icon: IconName, label: &'static str) -> Button {
+fn action_button(id: &'static str, icon: IconName, label: String) -> Button {
     Button::new(id)
         .icon(icon)
-        .tooltip(label)
+        .tooltip(label.clone())
         .accessibility_label(label)
         .small()
         .w(px(32.))
@@ -110,40 +111,32 @@ impl Desktop {
             .gap(px(8.))
             .when(ready, |row| {
                 row.child(
-                    action_button(
-                        "refresh",
-                        IconName::RefreshCw,
-                        language.text("Refresh", "刷新"),
-                    )
-                    .ghost()
-                    .disabled(blocked || state.preview)
-                    .loading_icon(IconName::RefreshCw)
-                    .loading(state.operation_feedback_visible(
-                        crate::gui_operation_feedback::OperationTarget::Refresh,
-                    ))
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.session.update(cx, |state, cx| {
-                            state.refresh();
-                            cx.notify();
-                        });
-                    })),
+                    action_button("refresh", IconName::RefreshCw, language.tr("ui.refresh"))
+                        .ghost()
+                        .disabled(blocked || state.preview)
+                        .loading_icon(IconName::RefreshCw)
+                        .loading(state.operation_feedback_visible(
+                            crate::gui_operation_feedback::OperationTarget::Refresh,
+                        ))
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.session.update(cx, |state, cx| {
+                                state.refresh();
+                                cx.notify();
+                            });
+                        })),
                 )
             })
             .when(!ready && has_focused_device, |row| {
                 row.child(
-                    action_button(
-                        "reconnect",
-                        IconName::Link,
-                        language.text("Connect", "连接"),
-                    )
-                    .primary()
-                    .disabled(blocked)
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.session.update(cx, |state, cx| {
-                            state.connect_focused_device();
-                            cx.notify();
-                        });
-                    })),
+                    action_button("reconnect", IconName::Link, language.tr("ui.connect"))
+                        .primary()
+                        .disabled(blocked)
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.session.update(cx, |state, cx| {
+                                state.connect_focused_device();
+                                cx.notify();
+                            });
+                        })),
                 )
             })
             .when(state.selected.is_some(), |row| {
@@ -151,7 +144,7 @@ impl Desktop {
                     action_button(
                         "release",
                         IconName::Unlink,
-                        language.text("Release control", "释放控制连接"),
+                        language.tr("ui.release_control"),
                     )
                     .ghost()
                     .disabled(blocked)
@@ -168,7 +161,7 @@ impl Desktop {
                     action_button(
                         "forget-device",
                         IconName::Trash,
-                        language.text("Remove headphones", "删除耳机"),
+                        language.tr("ui.remove_headphones"),
                     )
                     .ghost()
                     .when(!blocked, |button| {
@@ -202,7 +195,7 @@ impl Desktop {
             });
         let name = state
             .focused_name()
-            .unwrap_or_else(|| language.text("Your headphones", "你的耳机").into());
+            .unwrap_or_else(|| language.tr("ui.your_headphones"));
         let ready = connection == ConnectionState::Ready;
         let playback = (!compact)
             .then_some(snapshot)
@@ -262,17 +255,11 @@ impl Desktop {
         let language = self.language(cx);
         empty_state(
             IconName::Headphones,
-            language.text("Connect your headphones", "连接耳机"),
+            language.tr("ui.connect_your_headphones"),
             if state.saved_devices.entries.is_empty() {
-                language.text(
-                    "Pair in Bluetooth settings, then add your headphones.",
-                    "先在系统蓝牙设置中配对，再添加耳机。",
-                )
+                language.tr("ui.pair_before_adding")
             } else {
-                language.text(
-                    "Choose your headphones from the device menu.",
-                    "从左上角设备菜单选择耳机。",
-                )
+                language.tr("ui.choose_from_device_menu")
             },
             cx,
         )
@@ -335,10 +322,10 @@ impl Desktop {
         let Some(snapshot) = &state.snapshot else {
             return div().child(self.connection_page(cx));
         };
-        let mut details = gui_style::card(language.text("Headphones", "耳机信息"), cx);
+        let mut details = gui_style::card(language.tr("ui.headphones"), cx);
         let rows = [
             (
-                language.text("Model", "型号"),
+                language.tr("ui.model"),
                 snapshot
                     .model_name
                     .as_ref()
@@ -347,7 +334,7 @@ impl Desktop {
                     .to_owned(),
             ),
             (
-                language.text("Firmware", "固件版本"),
+                language.tr("ui.firmware"),
                 snapshot
                     .firmware_version
                     .as_ref()
@@ -356,17 +343,15 @@ impl Desktop {
                     .to_owned(),
             ),
             (
-                language.text("Connection type", "连接类型"),
+                language.tr("ui.connection_type"),
                 match snapshot.transport {
-                    bluetooth::TransportKind::Rfcomm => {
-                        language.text("Bluetooth Classic", "经典蓝牙")
-                    }
-                    bluetooth::TransportKind::Gatt => language.text("Bluetooth LE", "低功耗蓝牙"),
+                    bluetooth::TransportKind::Rfcomm => language.tr("ui.bluetooth_classic"),
+                    bluetooth::TransportKind::Gatt => language.tr("ui.bluetooth_le"),
                 }
                 .to_owned(),
             ),
             (
-                language.text("Status", "状态"),
+                language.tr("ui.status"),
                 connection_text(snapshot.connection, language).to_owned(),
             ),
         ];
@@ -392,26 +377,15 @@ impl Desktop {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(title(language.text("Connection", "连接")))
+                            .child(title(language.tr("ui.connection")))
                             .child(self.connection_actions(cx)),
                     )
-                    .child(caption(
-                        language.text(
-                            "Releasing control keeps Bluetooth audio connected.",
-                            "释放控制连接后，蓝牙音频仍保持连接。",
-                        ),
-                        cx,
-                    )),
+                    .child(caption(language.tr("ui.release_control_description"), cx)),
             )
     }
     pub(super) fn scenes_page(&self, cx: &Context<Self>) -> Div {
         let l = self.language(cx);
-        empty_state(
-            IconName::Sparkles,
-            l.text("Scenes aren't available yet", "场景暂未开放"),
-            "",
-            cx,
-        )
+        empty_state(IconName::Sparkles, l.tr("ui.scenes_unavailable"), "", cx)
     }
     pub(super) fn activity_page(&self, cx: &Context<Self>) -> Div {
         let l = self.language(cx);
@@ -421,17 +395,20 @@ impl Desktop {
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(title(l.text("Recent activity", "最近活动")))
+                .child(title(l.tr("ui.recent_activity")))
                 .child(
                     action_button(
                         "copy-diagnostics",
                         IconName::Copy,
-                        l.text("Copy diagnostics", "复制诊断信息"),
+                        l.tr("ui.copy_diagnostics"),
                     )
                     .ghost()
                     .on_click(cx.listener(|view, _, _, cx| {
                         let state = view.session.read(cx);
-                        let mut text = format!("{} diagnostics\n", app::APP_NAME);
+                        let mut text = state
+                            .preferences
+                            .language
+                            .tr_args("ui.diagnostics_title", &[("app", app::APP_NAME.into())]);
                         if let Some(snapshot) = &state.snapshot {
                             text.push_str(&app::snapshot_lines(snapshot).join("\n"));
                         }
@@ -450,8 +427,7 @@ impl Desktop {
         );
         let mut entries = div().flex().flex_col();
         if state.activity.is_empty() {
-            entries =
-                entries.child(caption(l.text("No recent activity", "暂无活动"), cx).py(px(20.)));
+            entries = entries.child(caption(l.tr("ui.no_recent_activity"), cx).py(px(20.)));
         }
         for (index, line) in state.activity.iter().rev().enumerate() {
             if index > 0 {
@@ -469,36 +445,28 @@ impl Desktop {
         list = list.child(entries);
         list
     }
-    pub(super) fn preferences_page(&self, cx: &Context<Self>) -> Div {
+    pub(super) fn preferences_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let l = self.language(cx);
         let prefs = self.session.read(cx).preferences.clone();
         let saving = cx.global::<gui_shell::Shell>().saving_preferences;
-        let mut languages = div().flex().flex_wrap().justify_end().gap(px(6.));
-        for (index, (value, label)) in [
-            (Language::English, "English"),
-            (Language::Chinese, "简体中文"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            languages = languages.child(
-                gui_style::chip(
-                    ("language", index),
-                    label,
-                    prefs.language == value,
-                    !saving,
-                    cx,
-                )
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    gui_shell::change_preferences(cx, move |p| p.language = value);
-                })),
-            );
+        // Follow committed preferences after a save succeeds or fails, including
+        // changes made from another window. Keep the pending choice while saving.
+        if !saving && self.language_select.read(cx).selected_value() != Some(&prefs.language) {
+            self.language_select.update(cx, |select, cx| {
+                select.set_selected_value(&prefs.language, window, cx);
+            });
         }
+        let languages = Select::new(&self.language_select)
+            .id("language-select")
+            .accessibility_label(l.tr("ui.language"))
+            .small()
+            .w(px(160.))
+            .disabled(saving);
         let mut themes = div().flex().flex_wrap().justify_end().gap(px(6.));
         for (index, (value, label)) in [
-            (ThemeMode::System, l.text("System", "跟随系统")),
-            (ThemeMode::Light, l.text("Light", "明亮")),
-            (ThemeMode::Dark, l.text("Dark", "暗色")),
+            (ThemeMode::System, l.tr("ui.system")),
+            (ThemeMode::Light, l.tr("ui.light")),
+            (ThemeMode::Dark, l.tr("ui.dark")),
         ]
         .into_iter()
         .enumerate()
@@ -510,47 +478,38 @@ impl Desktop {
                     })),
             );
         }
-        let appearance = gui_style::card(l.text("Appearance", "外观"), cx).child(
+        let appearance = gui_style::card(l.tr("ui.appearance"), cx).child(
             div()
                 .flex()
                 .flex_col()
-                .child(gui_style::setting_row(
-                    l.text("Language", "语言"),
-                    languages,
-                    cx,
-                ))
+                .child(gui_style::setting_row(l.tr("ui.language"), languages, cx))
                 .child(gui_style::divider(cx))
-                .child(gui_style::setting_row(l.text("Theme", "主题"), themes, cx)),
+                .child(gui_style::setting_row(l.tr("ui.theme"), themes, cx)),
         );
         let mut desktop_rows = div().flex().flex_col();
         for (index, (key, label, checked, disabled)) in [
-            (
-                "tray",
-                l.text("Show tray icon", "显示托盘图标"),
-                prefs.tray_enabled,
-                false,
-            ),
+            ("tray", l.tr("ui.show_tray_icon"), prefs.tray_enabled, false),
             (
                 "close",
-                l.text("Keep running when window closes", "关闭窗口后继续运行"),
+                l.tr("ui.keep_running_on_close"),
                 prefs.close_to_tray,
                 !prefs.tray_enabled,
             ),
             (
                 "autostart",
-                l.text("Start at login", "登录时启动"),
+                l.tr("ui.start_at_login"),
                 prefs.start_at_login,
                 false,
             ),
             (
                 "hidden",
-                l.text("Start in tray at login", "登录启动时仅显示托盘"),
+                l.tr("ui.start_in_tray_at_login"),
                 prefs.start_hidden,
                 !prefs.tray_enabled,
             ),
             (
                 "notifications",
-                l.text("Desktop notifications", "桌面通知"),
+                l.tr("ui.desktop_notifications"),
                 prefs.notifications,
                 false,
             ),
@@ -562,7 +521,7 @@ impl Desktop {
                 desktop_rows = desktop_rows.child(gui_style::divider(cx));
             }
             desktop_rows = desktop_rows.child(gui_style::setting_row(
-                label,
+                label.clone(),
                 Switch::new(key)
                     .accessibility_label(label)
                     .checked(checked)
@@ -580,11 +539,11 @@ impl Desktop {
                 cx,
             ));
         }
-        let mut desktop = gui_style::card(l.text("Desktop", "桌面"), cx).child(desktop_rows);
+        let mut desktop = gui_style::card(l.tr("ui.desktop"), cx).child(desktop_rows);
         if let Some(reason) = &cx.global::<gui_shell::Shell>().tray_error {
             desktop = desktop.child(
                 caption(
-                    format!("{}: {reason}", l.text("Tray unavailable", "托盘不可用")),
+                    l.tr_args("ui.tray_unavailable_reason", &[("reason", reason.clone())]),
                     cx,
                 )
                 .text_color(cx.theme().warning),
@@ -597,13 +556,10 @@ impl Desktop {
         };
         let mut shortcuts = div().flex().flex_col();
         for (index, (keys, label)) in [
-            (
-                format!("{modifier}1–7"),
-                l.text("Navigate pages", "切换页面"),
-            ),
-            (format!("{modifier}R"), l.text("Refresh", "刷新")),
-            (format!("{modifier},"), l.text("Preferences", "首选项")),
-            (format!("{modifier}Q"), l.text("Quit", "退出")),
+            (format!("{modifier}1–7"), l.tr("ui.navigate_pages")),
+            (format!("{modifier}R"), l.tr("ui.refresh")),
+            (format!("{modifier},"), l.tr("ui.preferences")),
+            (format!("{modifier}Q"), l.tr("ui.quit")),
         ]
         .into_iter()
         .enumerate()
@@ -621,7 +577,7 @@ impl Desktop {
             .max_w(px(980.))
             .child(appearance)
             .child(desktop)
-            .child(gui_style::card(l.text("Keyboard shortcuts", "键盘快捷键"), cx).child(shortcuts))
+            .child(gui_style::card(l.tr("ui.keyboard_shortcuts"), cx).child(shortcuts))
     }
     pub(super) fn about_page(&self, window: &Window, cx: &Context<Self>) -> Div {
         let l = self.language(cx);
@@ -639,10 +595,9 @@ impl Desktop {
                     .child(app::APP_NAME),
             )
             .child(caption(
-                format!(
-                    "{} {}",
-                    l.text("Version", "版本"),
-                    env!("CARGO_PKG_VERSION")
+                l.tr_args(
+                    "ui.version_number",
+                    &[("version", env!("CARGO_PKG_VERSION").into())],
                 ),
                 cx,
             ));
@@ -651,7 +606,7 @@ impl Desktop {
             .justify_center()
             .gap(px(10.))
             .child(
-                button("project", "GitHub")
+                button("project", l.tr("ui.github"))
                     .h(px(32.))
                     .px(px(14.))
                     .on_click(|_, _, cx| {
@@ -659,7 +614,7 @@ impl Desktop {
                     }),
             )
             .child(
-                button("license", l.text("License", "许可证"))
+                button("license", l.tr("ui.license"))
                     .h(px(32.))
                     .px(px(14.))
                     .on_click(|_, _, cx| {
@@ -676,28 +631,25 @@ impl Desktop {
             .w_full()
             .child(identity)
             .child(links)
+            .child(caption(l.tr("ui.independent_software"), cx).text_center())
             .child(
                 caption(
-                    l.text(
-                        "Independent software. Not affiliated with SONY.",
-                        "独立开发的软件，与 SONY 无隶属关系。",
-                    ),
+                    l.tr_args("ui.copyright_notice", &[("app", app::APP_NAME.into())]),
                     cx,
                 )
-                .text_center(),
+                .text_size(px(11.)),
             )
-            .child(caption(format!("{} · MIT", app::APP_NAME), cx).text_size(px(11.)))
-            .child(caption("GPUI / GPUI Kit · Apache-2.0     Lucide · ISC", cx).text_size(px(11.)))
+            .child(caption(l.tr("ui.third_party_licenses"), cx).text_size(px(11.)))
     }
 }
-fn connection_text(state: ConnectionState, l: Language) -> &'static str {
+fn connection_text(state: ConnectionState, l: Language) -> String {
     match state {
-        ConnectionState::Ready => l.text("Connected", "已连接"),
-        ConnectionState::Connected => l.text("Connecting…", "正在连接…"),
-        ConnectionState::Negotiating => l.text("Discovering capabilities…", "正在协商能力…"),
-        ConnectionState::Synchronizing => l.text("Synchronizing…", "正在同步…"),
-        ConnectionState::Closing => l.text("Releasing control…", "正在释放控制…"),
-        ConnectionState::Disconnected => l.text("Disconnected", "已断开"),
-        ConnectionState::Failed => l.text("Connection failed", "连接失败"),
+        ConnectionState::Ready => l.tr("ui.connected"),
+        ConnectionState::Connected => l.tr("ui.connecting_detail"),
+        ConnectionState::Negotiating => l.tr("ui.discovering_capabilities"),
+        ConnectionState::Synchronizing => l.tr("ui.synchronizing"),
+        ConnectionState::Closing => l.tr("ui.releasing_control"),
+        ConnectionState::Disconnected => l.tr("ui.disconnected"),
+        ConnectionState::Failed => l.tr("ui.connection_failed"),
     }
 }

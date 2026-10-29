@@ -20,15 +20,19 @@ pub enum Language {
 }
 
 impl Language {
-    pub fn text<'a>(self, english: &'a str, chinese: &'a str) -> &'a str {
-        match self {
-            Self::English => english,
-            Self::Chinese => chinese,
-        }
+    pub fn tr(self, key: &str) -> String {
+        app::i18n::translate(self.locale(), key)
+    }
+
+    pub fn tr_args(self, key: &str, arguments: &[(&str, String)]) -> String {
+        app::i18n::translate_args(self.locale(), key, arguments)
     }
 
     pub fn locale(self) -> &'static str {
-        self.text("en", "zh-CN")
+        match self {
+            Self::English => "en",
+            Self::Chinese => "zh-CN",
+        }
     }
 
     fn from_locale(locale: &str) -> Self {

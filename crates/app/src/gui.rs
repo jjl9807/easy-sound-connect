@@ -14,6 +14,7 @@ mod gui_device_prompts;
 mod gui_notices;
 mod gui_operation_feedback;
 mod gui_pages;
+mod gui_preferences;
 mod gui_preview;
 mod gui_product_images;
 mod gui_session;
@@ -58,15 +59,15 @@ impl Page {
         Self::Preferences,
         Self::About,
     ];
-    fn title(self, language: Language) -> &'static str {
+    fn title(self, language: Language) -> String {
         match self {
-            Self::Device => language.text("My Device", "我的设备"),
-            Self::Sound => language.text("Sound", "声音"),
-            Self::Scenes => language.text("Scenes", "场景"),
-            Self::Settings => language.text("Settings", "设置"),
-            Self::Activity => language.text("Activity", "活动"),
-            Self::Preferences => language.text("Preferences", "首选项"),
-            Self::About => language.text("About", "关于"),
+            Self::Device => language.tr("ui.my_device"),
+            Self::Sound => language.tr("ui.sound"),
+            Self::Scenes => language.tr("ui.scenes"),
+            Self::Settings => language.tr("ui.settings"),
+            Self::Activity => language.tr("ui.activity"),
+            Self::Preferences => language.tr("ui.preferences"),
+            Self::About => language.tr("ui.about"),
         }
     }
     fn icon(self) -> &'static str {
@@ -88,6 +89,7 @@ struct Desktop {
     page: Page,
     focus: FocusHandle,
     controls: gui_controls::ControlWidgets,
+    language_select: Entity<gui_preferences::LanguageSelect>,
     prompt_seen: Option<ezsc_core::PromptId>,
     prompt_focus: FocusHandle,
     prompt_action_focus: [FocusHandle; 2],
@@ -101,6 +103,8 @@ impl Desktop {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let (language_select, language_changed) =
+            gui_preferences::language_select(session.read(cx).preferences.language, window, cx);
         let observe = cx.observe(&session, |_, _, cx| cx.notify());
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|_, cx| cx.notify());
         let button_layout = cx.observe_button_layout_changed(window, |_, _, cx| cx.notify());
@@ -129,20 +133,33 @@ impl Desktop {
             page: Page::Device,
             focus,
             controls: Default::default(),
+            language_select,
             prompt_seen: None,
             prompt_focus: cx.focus_handle(),
             prompt_action_focus: [cx.focus_handle(), cx.focus_handle()],
             device_picker_open: std::env::args().any(|arg| arg == "--preview")
                 && std::env::args().any(|arg| arg == "--device-picker"),
-            _subscriptions: vec![observe, theme, button_layout, appearance, activation],
+            _subscriptions: vec![
+                observe,
+                theme,
+                button_layout,
+                appearance,
+                activation,
+                language_changed,
+            ],
         }
     }
     fn language(&self, cx: &App) -> Language {
         self.session.read(cx).preferences.language
     }
-    fn select_page(&mut self, page: Page, cx: &mut Context<Self>) {
+    fn select_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if !self.compact && self.page != page && page == Page::Device {
             gui_product_images::restart(cx);
+        }
+        if self.page != page {
+            // A page's focused control is about to leave the render tree.
+            // Keep subsequent keyboard navigation attached to the desktop.
+            window.focus(&self.focus, cx);
         }
         self.page = page;
         cx.notify();
@@ -161,7 +178,7 @@ impl Desktop {
         if modifiers.control || modifiers.platform {
             if let Ok(index) = event.keystroke.key.parse::<usize>() {
                 if let Some(page) = index.checked_sub(1).and_then(|index| Page::ALL.get(index)) {
-                    self.select_page(*page, cx);
+                    self.select_page(*page, window, cx);
                     cx.stop_propagation();
                 }
             } else if event.keystroke.key == "r" {
@@ -174,7 +191,7 @@ impl Desktop {
                     cx.notify();
                 });
             } else if event.keystroke.key == "," {
-                self.select_page(Page::Preferences, cx);
+                self.select_page(Page::Preferences, window, cx);
             } else if event.keystroke.key == "q" {
                 cx.quit();
             }
@@ -252,8 +269,8 @@ impl Desktop {
                             )
                             .child(page.title(language)),
                     )
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        view.select_page(page, cx);
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.select_page(page, window, cx);
                     })),
             );
         }
@@ -319,11 +336,11 @@ impl Render for Desktop {
                         .flex()
                         .gap_2()
                         .child(
-                            button("open-main", language.text("Open app", "打开主窗口"))
+                            button("open-main", language.tr("ui.open_app"))
                                 .on_click(|_, _, cx| gui_shell::open_main(cx)),
                         )
                         .child(
-                            button("quit", language.text("Quit", "退出"))
+                            button("quit", language.tr("ui.quit"))
                                 .ghost()
                                 .on_click(|_, _, cx| cx.quit()),
                         ),
@@ -385,7 +402,7 @@ impl Render for Desktop {
                             Page::Scenes => self.scenes_page(cx),
                             Page::Settings => self.settings_page(cx),
                             Page::Activity => self.activity_page(cx),
-                            Page::Preferences => self.preferences_page(cx),
+                            Page::Preferences => self.preferences_page(window, cx),
                             Page::About => self.about_page(window, cx),
                         }),
                 );

@@ -1,5 +1,9 @@
 //! Application identity and presentation helpers shared by the desktop and probe.
 
+rust_i18n::i18n!("locales", fallback = "en");
+
+pub mod i18n;
+
 /// User-visible product name, independent of platform and language.
 pub const APP_NAME: &str = "Easy Sound Connect";
 /// Desktop application ID, also used by distribution and login registrations.

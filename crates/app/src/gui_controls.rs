@@ -34,10 +34,13 @@ const EQ_BAND_MIN_WIDTH: f32 = 44.;
 const EQ_BAND_GAP: f32 = 4.;
 const EQ_TRACK_HEIGHT: f32 = 180.;
 
-pub(super) async fn refresh_controls(handle: &DeviceHandle) -> Result<(), String> {
+pub(super) async fn refresh_controls(
+    handle: &DeviceHandle,
+    language: Language,
+) -> Result<(), String> {
     let snapshot = handle.snapshot();
     if snapshot.connection != ConnectionState::Ready {
-        return Err("The control connection is not ready.".into());
+        return Err(language.tr("controls.refresh.not_ready"));
     }
     let mut failures = Vec::new();
     for entry in snapshot.noise {
@@ -45,7 +48,10 @@ pub(super) async fn refresh_controls(handle: &DeviceHandle) -> Result<(), String
             continue;
         }
         if let Err(error) = handle.refresh_noise(entry.kind).await {
-            failures.push(format!("Noise control: {error}"));
+            failures.push(language.tr_args(
+                "controls.refresh.noise_error",
+                &[("error", error.to_string())],
+            ));
             if handle.snapshot().connection != ConnectionState::Ready {
                 return Err(failures.join("; "));
             }
@@ -53,7 +59,10 @@ pub(super) async fn refresh_controls(handle: &DeviceHandle) -> Result<(), String
     }
     for entry in snapshot.equalizers {
         if let Err(error) = handle.refresh_equalizer(entry.kind).await {
-            failures.push(format!("Equalizer: {error}"));
+            failures.push(language.tr_args(
+                "controls.refresh.equalizer_error",
+                &[("error", error.to_string())],
+            ));
             if handle.snapshot().connection != ConnectionState::Ready {
                 return Err(failures.join("; "));
             }
@@ -71,7 +80,10 @@ pub(super) async fn refresh_controls(handle: &DeviceHandle) -> Result<(), String
                     .is_some_and(|capability| capability.band_count() > 0)
         });
         if needs_labels && let Err(error) = handle.refresh_equalizer_band_info(entry.kind).await {
-            failures.push(format!("Equalizer frequency labels: {error}"));
+            failures.push(language.tr_args(
+                "controls.refresh.band_info_error",
+                &[("error", error.to_string())],
+            ));
             if handle.snapshot().connection != ConnectionState::Ready {
                 return Err(failures.join("; "));
             }
@@ -79,7 +91,10 @@ pub(super) async fn refresh_controls(handle: &DeviceHandle) -> Result<(), String
     }
     for entry in snapshot.audio {
         if let Err(error) = handle.refresh_audio(entry.kind).await {
-            failures.push(format!("Audio control: {error}"));
+            failures.push(language.tr_args(
+                "controls.refresh.audio_error",
+                &[("error", error.to_string())],
+            ));
             if handle.snapshot().connection != ConnectionState::Ready {
                 return Err(failures.join("; "));
             }
@@ -87,7 +102,10 @@ pub(super) async fn refresh_controls(handle: &DeviceHandle) -> Result<(), String
     }
     for entry in snapshot.system {
         if let Err(error) = handle.refresh_system(entry.kind).await {
-            failures.push(format!("Speak-to-Chat: {error}"));
+            failures.push(language.tr_args(
+                "controls.refresh.speak_error",
+                &[("error", error.to_string())],
+            ));
             if handle.snapshot().connection != ConnectionState::Ready {
                 return Err(failures.join("; "));
             }
@@ -151,7 +169,7 @@ impl ControlAction {
 /// Keeps the newest unsent value per control, without discarding other bands.
 #[derive(Default)]
 pub(super) struct PendingControls {
-    queue: VecDeque<(u64, ControlAction, String)>,
+    queue: VecDeque<(u64, ControlAction, String, Language)>,
     intents: Vec<(u64, ControlAction, u64)>,
     revision: u64,
 }
@@ -180,8 +198,9 @@ impl PendingControls {
         } else {
             self.intents.push(intent);
         }
-        self.queue
-            .retain(|(generation, queued, _)| *generation == epoch && !queued.same_slider(action));
+        self.queue.retain(|(generation, queued, _, _)| {
+            *generation == epoch && !queued.same_slider(action)
+        });
         Some(self.revision)
     }
     fn is_latest(&self, epoch: u64, action: ControlAction, revision: u64) -> bool {
@@ -189,25 +208,42 @@ impl PendingControls {
             *generation == epoch && target.same_slider(action) && *latest == revision
         })
     }
-    fn push(&mut self, epoch: u64, action: ControlAction, label: String) -> bool {
+    fn push(
+        &mut self,
+        epoch: u64,
+        action: ControlAction,
+        label: String,
+        language: Language,
+    ) -> bool {
         if let Some(item) = self
             .queue
             .iter_mut()
-            .find(|(generation, queued, _)| *generation == epoch && queued.same_slider(action))
+            .find(|(generation, queued, _, _)| *generation == epoch && queued.same_slider(action))
         {
-            *item = (epoch, action, label);
+            *item = (epoch, action, label, language);
             return true;
         }
         if self.queue.len() == 64 {
             return false;
         }
-        self.queue.push_back((epoch, action, label));
+        self.queue.push_back((epoch, action, label, language));
         true
     }
 }
 
 impl Session {
     pub(super) fn submit_control(&mut self, action: ControlAction, label: String) {
+        self.submit_control_in_language(action, label, self.preferences.language);
+    }
+
+    // Keep an operation's rendered detail and surrounding status in one language,
+    // including slider intents queued before a preference change.
+    fn submit_control_in_language(
+        &mut self,
+        action: ControlAction,
+        label: String,
+        language: Language,
+    ) {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
@@ -248,12 +284,9 @@ impl Session {
         }
         self.busy = true;
         self.start_operation_feedback(action.target());
-        self.message = format!(
-            "{}: {label}. {}",
-            self.preferences.language.text("Pending", "等待确认"),
-            self.preferences
-                .language
-                .text("Waiting for the headset's readback…", "正在等待耳机回读…")
+        self.message = language.tr_args(
+            "controls.operation.awaiting_readback",
+            &[("setting", label.clone())],
         );
         let sender = self.events.clone();
         let epoch = self.epoch;
@@ -273,7 +306,9 @@ impl Session {
                 } => handle.set_equalizer_band(kind, preset, index, value).await,
             }
             .map_err(|error| error.to_string());
-            let _ = sender.send(Event::Operation(epoch, label, result)).await;
+            let _ = sender
+                .send(Event::Operation(epoch, label, language, result))
+                .await;
         });
     }
 
@@ -290,7 +325,14 @@ impl Session {
         self.pending_controls.register(epoch, action)
     }
 
-    fn submit_slider(&mut self, epoch: u64, intent: u64, action: ControlAction, label: String) {
+    fn submit_slider(
+        &mut self,
+        epoch: u64,
+        intent: u64,
+        action: ControlAction,
+        label: String,
+        language: Language,
+    ) {
         if self.preview
             || !self.pending_controls.is_latest(epoch, action, intent)
             || epoch != self.epoch
@@ -302,18 +344,14 @@ impl Session {
             return;
         }
         if self.busy {
-            if !self.pending_controls.push(epoch, action, label) {
+            if !self.pending_controls.push(epoch, action, label, language) {
                 self.message = self
                     .preferences
                     .language
-                    .text(
-                        "Too many pending controls. Wait for the headset before editing again.",
-                        "待处理的设置过多，请等待耳机响应后再编辑。",
-                    )
-                    .into();
+                    .tr("controls.operation.queue_full");
             }
         } else {
-            self.submit_control(action, label);
+            self.submit_control_in_language(action, label, language);
         }
     }
 
@@ -321,9 +359,9 @@ impl Session {
         if self.settings_blocked() {
             return;
         }
-        while let Some((epoch, action, label)) = self.pending_controls.queue.pop_front() {
+        while let Some((epoch, action, label, language)) = self.pending_controls.queue.pop_front() {
             if epoch == self.epoch {
-                self.submit_control(action, label);
+                self.submit_control_in_language(action, label, language);
                 if self.busy {
                     break;
                 }
@@ -347,6 +385,7 @@ struct ControlSlider {
     intent: Option<u64>,
     values: Vec<u8>,
     label: String,
+    language: Language,
 }
 
 impl Desktop {
@@ -360,6 +399,7 @@ impl Desktop {
         value: u8,
         action: ControlAction,
         label: String,
+        language: Language,
         cx: &mut Context<Self>,
     ) {
         let Some(widget) = self.controls.sliders.get_mut(key) else {
@@ -376,7 +416,7 @@ impl Desktop {
         };
         widget.last_submitted = Some(value);
         self.session.update(cx, |session, cx| {
-            session.submit_slider(epoch, intent, action, label);
+            session.submit_slider(epoch, intent, action, label, language);
             cx.notify();
         });
         cx.notify();
@@ -396,6 +436,7 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> gpui_kit::Stateful<Div> {
         let epoch = self.session.read(cx).epoch;
+        let language = self.language(cx);
         if self.controls.epoch != Some(epoch) {
             self.controls.sliders.clear();
             self.controls.epoch = Some(epoch);
@@ -441,6 +482,7 @@ impl Desktop {
                     };
                     let action = event_action(value);
                     let event_label = widget.label.clone();
+                    let event_language = widget.language;
                     if matches!(event, SliderEvent::Change(_)) {
                         let intent = view.session.update(cx, |session, _| {
                             session.register_slider_intent(epoch, action)
@@ -453,11 +495,22 @@ impl Desktop {
                         widget.intent = intent;
                         widget.last_submitted = None;
                     }
-                    let label = format!("{event_label}: {value}");
+                    let label = event_language.tr_args(
+                        "controls.setting_value",
+                        &[("setting", event_label), ("value", value.to_string())],
+                    );
                     let identity = slider.entity_id();
                     if matches!(event, SliderEvent::Release(_)) {
                         view.flush_slider(
-                            &event_key, identity, revision, epoch, value, action, label, cx,
+                            &event_key,
+                            identity,
+                            revision,
+                            epoch,
+                            value,
+                            action,
+                            label,
+                            event_language,
+                            cx,
                         );
                     } else {
                         // A brief pause previews the latest draft; releasing always submits
@@ -469,7 +522,15 @@ impl Desktop {
                                 .await;
                             let _ = view.update(cx, |view, cx| {
                                 view.flush_slider(
-                                    &key, identity, revision, epoch, value, action, label, cx,
+                                    &key,
+                                    identity,
+                                    revision,
+                                    epoch,
+                                    value,
+                                    action,
+                                    label,
+                                    event_language,
+                                    cx,
                                 );
                             });
                         })
@@ -489,6 +550,7 @@ impl Desktop {
                     intent: None,
                     values,
                     label: label.clone(),
+                    language,
                 },
             );
         }
@@ -496,6 +558,7 @@ impl Desktop {
         let settled = !session.busy && session.pending_controls.is_empty();
         let widget = self.controls.sliders.get_mut(&key).expect("slider created");
         widget.label = label.clone();
+        widget.language = language;
         if !enabled {
             widget.interacting = false;
             widget.revision = widget.revision.wrapping_add(1);
@@ -558,7 +621,11 @@ impl Desktop {
                                 epoch,
                                 intent,
                                 action,
-                                format!("{key_label}: {value}"),
+                                language.tr_args(
+                                    "controls.setting_value",
+                                    &[("setting", key_label.clone()), ("value", value.to_string())],
+                                ),
+                                language,
                             );
                         }
                         cx.notify();
@@ -643,27 +710,24 @@ impl Desktop {
             }
             let enabled = editable && noise_ready(entry);
             let kind = entry.kind;
-            let mut section =
-                card(language.text("Noise control", "降噪与环境声"), cx).children(availability(
-                    ready,
-                    self.session
-                        .read(cx)
-                        .operation_feedback_visible(OperationTarget::Noise(entry.kind)),
-                    entry.freshness,
-                    entry
-                        .status
-                        .is_some_and(|status| status.availability == NoiseAvailability::Enabled),
-                    language,
-                    cx,
-                ));
+            let mut section = card(language.tr("controls.noise.title"), cx).children(availability(
+                ready,
+                self.session
+                    .read(cx)
+                    .operation_feedback_visible(OperationTarget::Noise(entry.kind)),
+                entry.freshness,
+                entry
+                    .status
+                    .is_some_and(|status| status.availability == NoiseAvailability::Enabled),
+                language,
+                cx,
+            ));
             let Some(NoiseParameters::Control {
                 effect, settings, ..
             }) = entry.parameters
             else {
-                cards = cards.child(section.child(note(
-                    language.text("Waiting for headset values…", "正在读取耳机状态…"),
-                    cx,
-                )));
+                cards = cards
+                    .child(section.child(note(language.tr("controls.state.waiting_values"), cx)));
                 continue;
             };
             let presentation = NoisePresentation::from_settings(settings);
@@ -680,12 +744,12 @@ impl Desktop {
                     (
                         0,
                         NoiseMode::NoiseCancelling,
-                        language.text("Noise cancelling", "降噪"),
+                        language.tr("controls.noise.cancelling"),
                     ),
                     (
                         1,
                         NoiseMode::AmbientSound,
-                        language.text("Ambient sound", "环境声"),
+                        language.tr("controls.noise.ambient"),
                     ),
                 ] {
                     modes = modes.child(mode_control(
@@ -705,9 +769,9 @@ impl Desktop {
                 }
             } else {
                 let label = if matches!(settings, NoiseSettings::NcOnly { .. }) {
-                    language.text("Noise cancelling", "降噪")
+                    language.tr("controls.noise.cancelling")
                 } else {
-                    language.text("On", "开启")
+                    language.tr("controls.on")
                 };
                 let action = if matches!(settings, NoiseSettings::NcOnly { .. }) {
                     NoiseChange::Mode(NoiseMode::NoiseCancelling)
@@ -729,7 +793,7 @@ impl Desktop {
             }
             modes = modes.child(mode_control(
                 ("noise-off", index),
-                language.text("Off", "关闭"),
+                language.tr("controls.off"),
                 IconName::Power,
                 enabled,
                 !effect_on,
@@ -755,7 +819,7 @@ impl Desktop {
                             .collect();
                         ambient = ambient.child(self.control_slider(
                             format!("ambient-{kind:?}-{ambient_mode:?}"),
-                            language.text("Ambient sound level", "环境声等级").into(),
+                            language.tr("controls.noise.ambient_level"),
                             values,
                             level,
                             slider_editable && noise_ready(entry),
@@ -768,9 +832,9 @@ impl Desktop {
                         ));
                     } else {
                         ambient = ambient.child(note(
-                            format!(
-                                "{}: {level}",
-                                language.text("Ambient sound level", "环境声等级")
+                            language.tr_args(
+                                "controls.noise.ambient_level_value",
+                                &[("level", level.to_string())],
                             ),
                             cx,
                         ));
@@ -792,18 +856,18 @@ impl Desktop {
                             }
                         });
                     let session = self.session.clone();
-                    let label = language.text("Voice focus", "语音聚焦");
+                    let label = language.tr("controls.voice_focus");
                     ambient = ambient.child(crate::gui_style::setting_row(
-                        label,
+                        label.clone(),
                         Switch::new(("noise-voice", index))
-                            .accessibility_label(label)
+                            .accessibility_label(label.clone())
                             .checked(focus)
                             .disabled(!can_focus)
                             .on_change(move |value, _, cx| {
                                 session.update(cx, |session, cx| {
                                     session.submit_control(
                                         ControlAction::Noise(kind, NoiseChange::VoiceFocus(*value)),
-                                        label.into(),
+                                        label.clone(),
                                     );
                                     cx.notify();
                                 })
@@ -818,19 +882,19 @@ impl Desktop {
                 && let Some((adaptive, sensitivity)) = noise_adaptation(entry)
             {
                 let session = self.session.clone();
-                let label = language.text("Automatic adjustment", "自动调节");
+                let label = language.tr("controls.noise.automatic");
                 section = section.child(crate::gui_style::divider(cx)).child(
                     crate::gui_style::setting_row(
-                        label,
+                        label.clone(),
                         Switch::new(("noise-adaptive", index))
-                            .accessibility_label(label)
+                            .accessibility_label(label.clone())
                             .checked(adaptive == NoiseSwitch::On)
                             .disabled(!enabled)
                             .on_change(move |value, _, cx| {
                                 session.update(cx, |session, cx| {
                                     session.submit_control(
                                         ControlAction::Noise(kind, NoiseChange::Adaptive(*value)),
-                                        label.into(),
+                                        label.clone(),
                                     );
                                     cx.notify();
                                 })
@@ -840,13 +904,21 @@ impl Desktop {
                 );
                 let mut choices = div().flex().flex_wrap().items_center().gap(px(8.));
                 for (slot, choice, label) in [
-                    (0, AdaptiveSensitivity::Low, language.text("Low", "低")),
+                    (
+                        0,
+                        AdaptiveSensitivity::Low,
+                        language.tr("controls.sensitivity.low"),
+                    ),
                     (
                         1,
                         AdaptiveSensitivity::Standard,
-                        language.text("Standard", "标准"),
+                        language.tr("controls.sensitivity.standard"),
                     ),
-                    (2, AdaptiveSensitivity::High, language.text("High", "高")),
+                    (
+                        2,
+                        AdaptiveSensitivity::High,
+                        language.tr("controls.sensitivity.high"),
+                    ),
                 ] {
                     choices = choices.child(control_button(
                         ("noise-sensitivity", index * 3 + slot),
@@ -859,7 +931,7 @@ impl Desktop {
                     ));
                 }
                 section = section.child(crate::gui_style::setting_row(
-                    language.text("Sensitivity", "灵敏度"),
+                    language.tr("controls.sensitivity.title"),
                     choices,
                     cx,
                 ));
@@ -893,7 +965,7 @@ impl Desktop {
         for (index, entry) in snapshot.equalizers.iter().enumerate() {
             let enabled = editable && equalizer_ready(entry);
             let mut section =
-                card(language.text("Equalizer", "均衡器"), cx).children(availability(
+                card(language.tr("controls.equalizer.title"), cx).children(availability(
                     ready,
                     self.session
                         .read(cx)
@@ -908,10 +980,9 @@ impl Desktop {
                 ));
             let (Some(capability), Some(parameters)) = (&entry.capability, &entry.parameters)
             else {
-                cards = cards.child(section.child(note(
-                    language.text("Waiting for equalizer values…", "正在读取均衡器…"),
-                    cx,
-                )));
+                cards = cards.child(
+                    section.child(note(language.tr("controls.equalizer.waiting_values"), cx)),
+                );
                 continue;
             };
             let kind = entry.kind;
@@ -926,7 +997,7 @@ impl Desktop {
                     .iter()
                     .find(|(id, _)| Some(*id) == preset)
                     .map(|(_, label)| label.clone())
-                    .unwrap_or_else(|| language.text("Select preset", "选择预设").into());
+                    .unwrap_or_else(|| language.tr("controls.equalizer.select_preset"));
                 let session = self.session.clone();
                 let dropdown = Button::new(("tray-eq", index))
                     .label(current)
@@ -990,15 +1061,9 @@ impl Desktop {
             if enabled && kind != EqualizerKind::PresetNonCustomizable && !can_edit {
                 section = section.child(note(
                     if valid_shape {
-                        language.text(
-                            "Choose a custom preset to edit the curve.",
-                            "请选择自定义预设以编辑曲线。",
-                        )
+                        language.tr("controls.equalizer.choose_custom")
                     } else {
-                        language.text(
-                            "Refresh the equalizer before editing.",
-                            "请刷新均衡器状态后再编辑。",
-                        )
+                        language.tr("controls.equalizer.refresh_required")
                     },
                     cx,
                 ));
@@ -1019,9 +1084,13 @@ impl Desktop {
                         band,
                         parameters.levels().len(),
                         entry.band_info.as_ref().filter(|_| valid_shape),
+                        language,
                     )
                 } else {
-                    format!("{} {}", language.text("Band", "频段"), band + 1)
+                    language.tr_args(
+                        "controls.equalizer.band",
+                        &[("number", (band + 1).to_string())],
+                    )
                 };
                 let key = format!("eq-{kind:?}-{preset:?}-{band}");
                 bands = bands.child(self.control_slider(
@@ -1152,7 +1221,7 @@ pub(super) fn control_button(
 #[allow(clippy::too_many_arguments)]
 fn mode_control(
     id: impl Into<ElementId>,
-    label: &'static str,
+    label: String,
     icon: IconName,
     enabled: bool,
     selected: bool,
@@ -1160,6 +1229,7 @@ fn mode_control(
     session: Entity<Session>,
     cx: &App,
 ) -> Div {
+    let action_label = label.clone();
     div()
         .flex_1()
         .min_w_0()
@@ -1170,7 +1240,7 @@ fn mode_control(
         .child(
             crate::gui_style::chip(id, "", selected, enabled, cx)
                 .child(Icon::new(icon).size(px(21.)))
-                .accessibility_label(label)
+                .accessibility_label(label.clone())
                 .w(px(58.))
                 .h(px(58.))
                 .p_0()
@@ -1200,7 +1270,7 @@ fn mode_control(
                 })
                 .on_click(move |_, _, cx| {
                     session.update(cx, |session, cx| {
-                        session.submit_control(action, label.into());
+                        session.submit_control(action, action_label.clone());
                         cx.notify();
                     });
                 }),
@@ -1227,22 +1297,6 @@ fn mode_control(
         )
 }
 
-fn localized_preset(preset: &Preset, language: Language) -> String {
-    if preset.name_utf8().is_ok_and(|name| !name.trim().is_empty()) {
-        return preset_label(preset);
-    }
-    if preset.id == PresetId::OFF {
-        language.text("Off", "关闭").into()
-    } else if preset.id == PresetId::CUSTOM {
-        language.text("Custom", "自定义").into()
-    } else if preset.id == PresetId::USER_1 {
-        language.text("Custom 1", "自定义 1").into()
-    } else if preset.id == PresetId::USER_2 {
-        language.text("Custom 2", "自定义 2").into()
-    } else {
-        preset_label(preset)
-    }
-}
 fn noise_ready(entry: &NoiseState) -> bool {
     entry.freshness == Freshness::Current
         && entry.capability.is_some()
@@ -1304,52 +1358,73 @@ fn next_level(range: AmbientLevelRange, current: u8, increase: bool) -> Option<u
         levels.rfind(|level| *level < current)
     }
 }
-fn preset_label(preset: &Preset) -> String {
+fn localized_preset(preset: &Preset, language: Language) -> String {
     if let Ok(name) = preset.name_utf8()
         && !name.trim().is_empty()
     {
         return name.into();
     }
-    match preset.id {
-        PresetId::OFF => "Off".into(),
-        PresetId::ROCK => "Rock".into(),
-        PresetId::BRIGHT => "Bright".into(),
-        PresetId::HEAVY => "Heavy".into(),
-        PresetId::CLEAR => "Clear".into(),
-        PresetId::HARD => "Hard".into(),
-        PresetId::SOFT => "Soft".into(),
-        PresetId::CUSTOM => "Custom".into(),
-        PresetId::USER_1 => "Custom 1".into(),
-        PresetId::USER_2 => "Custom 2".into(),
-        PresetId::USER_3 => "Custom 3".into(),
-        PresetId::USER_4 => "Custom 4".into(),
-        PresetId::USER_5 => "Custom 5".into(),
-        id => format!("Preset 0x{:02X}", id.as_raw()),
-    }
+    let key = match preset.id {
+        PresetId::OFF => "controls.off",
+        PresetId::ROCK => "controls.equalizer.rock",
+        PresetId::BRIGHT => "controls.equalizer.bright",
+        PresetId::HEAVY => "controls.equalizer.heavy",
+        PresetId::CLEAR => "controls.equalizer.clear",
+        PresetId::HARD => "controls.equalizer.hard",
+        PresetId::SOFT => "controls.equalizer.soft",
+        PresetId::CUSTOM => "controls.equalizer.custom",
+        PresetId::USER_1 => "controls.equalizer.custom_1",
+        PresetId::USER_2 => "controls.equalizer.custom_2",
+        PresetId::USER_3 => "controls.equalizer.custom_3",
+        PresetId::USER_4 => "controls.equalizer.custom_4",
+        PresetId::USER_5 => "controls.equalizer.custom_5",
+        id => {
+            return language.tr_args(
+                "controls.equalizer.unknown_preset",
+                &[("code", format!("{:02X}", id.as_raw()))],
+            );
+        }
+    };
+    language.tr(key)
 }
 fn curve_band_label(
     index: usize,
     band_count: usize,
     info: Option<&ezsc_core::equalizer::EqualizerBandInfo>,
+    language: Language,
 ) -> String {
     info.filter(|info| info.bands.len() == band_count)
         .and_then(|info| info.bands.get(index))
         .copied()
-        .map(|info| band_label(index, info))
-        .unwrap_or_else(|| format!("Band {}", index + 1))
+        .map(|info| band_label(index, info, language))
+        .unwrap_or_else(|| {
+            language.tr_args(
+                "controls.equalizer.band",
+                &[("number", (index + 1).to_string())],
+            )
+        })
 }
 
-fn band_label(index: usize, info: BandInformation) -> String {
+fn band_label(index: usize, info: BandInformation, language: Language) -> String {
     if info.is_clear_bass() {
-        "Clear Bass".into()
+        language.tr("controls.equalizer.clear_bass")
     } else if let Some(hertz) = info.frequency_hz() {
         if hertz >= 1000 {
-            format!("{} kHz", hertz as f32 / 1000.0)
+            language.tr_args(
+                "controls.equalizer.kilohertz",
+                &[("frequency", (hertz as f32 / 1000.0).to_string())],
+            )
         } else {
-            format!("{hertz} Hz")
+            language.tr_args(
+                "controls.equalizer.hertz",
+                &[("frequency", hertz.to_string())],
+            )
         }
     } else {
-        format!("Band {}", index + 1)
+        language.tr_args(
+            "controls.equalizer.band",
+            &[("number", (index + 1).to_string())],
+        )
     }
 }
 pub(super) fn card(title: impl Into<SharedString>, cx: &App) -> Div {
@@ -1370,17 +1445,14 @@ pub(super) fn availability(
     cx: &App,
 ) -> Option<Div> {
     let message = if !ready {
-        language.text(
-            "Connect your headset to use this control.",
-            "连接耳机后可使用此功能。",
-        )
+        language.tr("controls.state.connect_required")
     } else if freshness != Freshness::Current {
-        language.text("Refresh state before editing.", "请刷新状态后再编辑。")
+        language.tr("controls.state.refresh_required")
     } else if !available {
-        language.text("Unavailable in the current mode.", "当前模式下不可用。")
+        language.tr("controls.state.unavailable")
     } else if waiting {
         return Some(
-            note(language.text("Waiting…", "等待中…"), cx)
+            note(language.tr("controls.state.waiting"), cx)
                 .absolute()
                 .top(px(22.))
                 .right(px(20.))
@@ -1688,8 +1760,18 @@ mod tests {
             ],
         )
         .unwrap();
-        let names: Vec<_> = capability.presets().iter().map(preset_label).collect();
+        let names: Vec<_> = capability
+            .presets()
+            .iter()
+            .map(|preset| localized_preset(preset, Language::English))
+            .collect();
         assert_eq!(names, ["Off", "Custom 1", "Preset 0x20", "New"]);
+        let names: Vec<_> = capability
+            .presets()
+            .iter()
+            .map(|preset| localized_preset(preset, Language::Chinese))
+            .collect();
+        assert_eq!(names, ["关闭", "自定义 1", "预设 0x20", "New"]);
     }
 
     #[test]
@@ -1699,9 +1781,20 @@ mod tests {
             &[0x5b, 0, 2, 1, 0, 31, 1, 0, 63],
         )
         .unwrap();
-        assert_eq!(curve_band_label(0, 2, Some(&info)), "31 Hz");
-        assert_eq!(curve_band_label(0, 3, Some(&info)), "Band 1");
-        assert_eq!(curve_band_label(0, 2, None), "Band 1");
+        assert_eq!(
+            curve_band_label(0, 2, Some(&info), Language::English),
+            "31 Hz"
+        );
+        assert_eq!(
+            curve_band_label(0, 3, Some(&info), Language::English),
+            "Band 1"
+        );
+        assert_eq!(curve_band_label(0, 2, None, Language::English), "Band 1");
+        assert_eq!(curve_band_label(0, 2, None, Language::Chinese), "频段 1");
+        assert_eq!(
+            curve_band_label(0, 2, Some(&info), Language::Chinese),
+            "31 Hz"
+        );
     }
 
     #[test]
@@ -1713,7 +1806,8 @@ mod tests {
                 BandInformation {
                     information_type: BandInformationType::NONE,
                     value: 1000
-                }
+                },
+                Language::English,
             ),
             "Band 3"
         );
@@ -1723,7 +1817,8 @@ mod tests {
                 BandInformation {
                     information_type: BandInformationType::SPECIFIC,
                     value: 1
-                }
+                },
+                Language::English,
             ),
             "Clear Bass"
         );
@@ -1733,7 +1828,8 @@ mod tests {
                 BandInformation {
                     information_type: BandInformationType::HERTZ,
                     value: 2500
-                }
+                },
+                Language::English,
             ),
             "2.5 kHz"
         );
@@ -1757,12 +1853,12 @@ mod queue_tests {
     fn newer_window_intent_invalidates_old_timers_and_unsent_values() {
         let mut queue = PendingControls::default();
         let main = queue.register(1, band(0, 3)).unwrap();
-        assert!(queue.push(1, band(0, 3), "main".into()));
+        assert!(queue.push(1, band(0, 3), "main".into(), Language::English));
         let tray = queue.register(1, band(0, 8)).unwrap();
         assert!(!queue.is_latest(1, band(0, 3), main));
         assert!(queue.is_latest(1, band(0, 8), tray));
         assert!(queue.is_empty());
-        assert!(queue.push(1, band(0, 8), "tray".into()));
+        assert!(queue.push(1, band(0, 8), "tray".into(), Language::English));
         // A different frequency has its own final intent.
         let other = queue.register(1, band(1, 5)).unwrap();
         assert!(queue.is_latest(1, band(0, 8), tray));
@@ -1777,12 +1873,12 @@ mod queue_tests {
     #[test]
     fn coalescing_keeps_the_final_value_of_each_band() {
         let mut queue = PendingControls::default();
-        assert!(queue.push(3, band(0, 1), "first".into()));
-        assert!(queue.push(3, band(1, 4), "second".into()));
-        assert!(queue.push(3, band(0, 7), "final".into()));
+        assert!(queue.push(3, band(0, 1), "first".into(), Language::English));
+        assert!(queue.push(3, band(1, 4), "second".into(), Language::English));
+        assert!(queue.push(3, band(0, 7), "final".into(), Language::English));
         assert_eq!(queue.queue.len(), 2);
         assert!(
-            matches!(queue.queue.pop_front(), Some((3, ControlAction::Band { index: 0, value: 7, .. }, label)) if label == "final")
+            matches!(queue.queue.pop_front(), Some((3, ControlAction::Band { index: 0, value: 7, .. }, label, Language::English)) if label == "final")
         );
         assert!(matches!(
             queue.queue.pop_front(),
@@ -1793,23 +1889,57 @@ mod queue_tests {
                     value: 4,
                     ..
                 },
-                _
+                _,
+                Language::English,
             ))
         ));
+    }
+
+    #[test]
+    fn queued_labels_keep_their_language_when_later_intents_use_another_locale() {
+        let mut queue = PendingControls::default();
+        assert!(queue.push(1, band(0, 3), "Band 1: 3".into(), Language::English));
+        assert!(queue.push(1, band(1, 4), "Band 2: 4".into(), Language::English));
+        // Switching UI language and editing one band replaces both its value
+        // and originating language, without relabelling the other pending band.
+        assert!(queue.push(1, band(1, 7), "频段 2：7".into(), Language::Chinese));
+        let (_, _, label, language) = queue.queue.pop_front().unwrap();
+        assert_eq!(
+            crate::gui_session::operation_message(
+                &label,
+                Ok(ezsc_core::OperationResult::Synchronized),
+                language,
+            ),
+            "Updated: Band 1: 3."
+        );
+        let (_, _, label, language) = queue.queue.pop_front().unwrap();
+        assert_eq!(
+            crate::gui_session::operation_message(
+                &label,
+                Ok(ezsc_core::OperationResult::Synchronized),
+                language,
+            ),
+            "已更新：频段 2：7。"
+        );
     }
 
     #[test]
     fn queue_is_bounded_but_can_replace_an_existing_target_when_full() {
         let mut queue = PendingControls::default();
         for index in 0..64 {
-            assert!(queue.push(1, band(index, 1), "value".into()));
+            assert!(queue.push(1, band(index, 1), "value".into(), Language::English));
         }
-        assert!(!queue.push(1, band(64, 1), "new".into()));
-        assert!(queue.push(1, band(0, 9), "last".into()));
+        assert!(!queue.push(1, band(64, 1), "new".into(), Language::English));
+        assert!(queue.push(1, band(0, 9), "last".into(), Language::English));
         assert_eq!(queue.queue.len(), 64);
         assert!(matches!(
             queue.queue.front(),
-            Some((1, ControlAction::Band { value: 9, .. }, _))
+            Some((
+                1,
+                ControlAction::Band { value: 9, .. },
+                _,
+                Language::English
+            ))
         ));
         queue.clear();
         assert!(queue.is_empty());
@@ -1818,8 +1948,8 @@ mod queue_tests {
     #[test]
     fn control_identity_does_not_merge_different_connections_or_presets() {
         let mut queue = PendingControls::default();
-        assert!(queue.push(1, band(0, 1), "old".into()));
-        assert!(queue.push(2, band(0, 2), "new".into()));
+        assert!(queue.push(1, band(0, 1), "old".into(), Language::English));
+        assert!(queue.push(2, band(0, 2), "new".into(), Language::English));
         assert!(queue.push(
             2,
             ControlAction::Band {
@@ -1828,7 +1958,8 @@ mod queue_tests {
                 index: 0,
                 value: 3
             },
-            "slot".into()
+            "slot".into(),
+            Language::English,
         ));
         assert_eq!(queue.queue.len(), 3);
     }

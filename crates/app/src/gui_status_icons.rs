@@ -29,12 +29,18 @@ fn battery_icon(reading: Option<BatteryReading>) -> IconName {
     }
 }
 
-fn freshness_suffix(freshness: Freshness, ready: bool, language: Language) -> &'static str {
-    match freshness {
-        Freshness::Unknown => language.text(" · not read", " · 未读取"),
-        Freshness::Current if ready => "",
-        _ => language.text(" · last known", " · 上次读取"),
-    }
+fn status_description(
+    value: String,
+    freshness: Freshness,
+    ready: bool,
+    language: Language,
+) -> String {
+    let key = match freshness {
+        Freshness::Unknown => "ui.status_not_read",
+        Freshness::Current if ready => return value,
+        _ => "ui.status_last_known",
+    };
+    language.tr_args(key, &[("value", value)])
 }
 
 pub(super) fn batteries(
@@ -55,10 +61,10 @@ pub(super) fn batteries(
                 .enumerate()
                 .map(|(index, endpoint)| {
                     let label = match endpoint.component {
-                        BatteryComponent::Headset => language.text("Battery", "电量"),
-                        BatteryComponent::Left => language.text("Left", "左耳"),
-                        BatteryComponent::Right => language.text("Right", "右耳"),
-                        BatteryComponent::Case => language.text("Case", "充电盒"),
+                        BatteryComponent::Headset => language.tr("ui.battery"),
+                        BatteryComponent::Left => language.tr("ui.left"),
+                        BatteryComponent::Right => language.tr("ui.right"),
+                        BatteryComponent::Case => language.tr("ui.case"),
                     };
                     let current = ready && endpoint.freshness == Freshness::Current;
                     let level = endpoint.reading.map(|reading| reading.level.as_u8());
@@ -70,18 +76,23 @@ pub(super) fn batteries(
                         cx.theme().foreground
                     };
                     let value = level.map_or_else(|| "—".to_owned(), |value| format!("{value}%"));
-                    let charging = endpoint
-                        .reading
-                        .map_or("", |reading| match reading.charging {
-                            ChargingStatus::Charging => language.text(" · charging", " · 充电中"),
-                            ChargingStatus::Charged => {
-                                language.text(" · fully charged", " · 已充满")
-                            }
-                            ChargingStatus::NotCharging => "",
-                            _ => language.text(" · charging status unknown", " · 充电状态未知"),
-                        });
-                    let age = freshness_suffix(endpoint.freshness, ready, language);
-                    let description = format!("{label}: {value}{charging}{age}");
+                    let description = language.tr_args(
+                        "ui.battery_description",
+                        &[("name", label), ("value", value.clone())],
+                    );
+                    let description = match endpoint.reading.map(|reading| reading.charging) {
+                        Some(ChargingStatus::Charging) => {
+                            language.tr_args("ui.charging_description", &[("value", description)])
+                        }
+                        Some(ChargingStatus::Charged) => {
+                            language.tr_args("ui.charged_description", &[("value", description)])
+                        }
+                        Some(ChargingStatus::NotCharging) | None => description,
+                        _ => language
+                            .tr_args("ui.charging_unknown_description", &[("value", description)]),
+                    };
+                    let description =
+                        status_description(description, endpoint.freshness, ready, language);
                     let icon = match endpoint.component {
                         BatteryComponent::Left | BatteryComponent::Right => img(themed_asset(
                             if endpoint.component == BatteryComponent::Left {
@@ -204,22 +215,16 @@ pub(super) fn audio_marks(
         let mark = codec.codec.and_then(codec_mark);
         let name = mark.as_ref().map_or_else(
             || match codec.codec {
-                None => language.text("Audio codec not read", "编码尚未读取").into(),
-                Some(AudioCodec::UNSETTLED) => language
-                    .text("Audio codec not determined", "编码尚未确定")
-                    .into(),
-                Some(value) => format!(
-                    "{} (0x{:02X})",
-                    language.text("Unknown audio codec", "未知编码"),
-                    value.as_raw()
+                None => language.tr("ui.audio_codec_not_read"),
+                Some(AudioCodec::UNSETTLED) => language.tr("ui.audio_codec_not_determined"),
+                Some(value) => language.tr_args(
+                    "ui.unknown_audio_codec_code",
+                    &[("code", format!("{:02X}", value.as_raw()))],
                 ),
             },
             |mark| mark.name.to_owned(),
         );
-        let description = format!(
-            "{name}{}",
-            freshness_suffix(codec.freshness, ready, language)
-        );
+        let description = status_description(name, codec.freshness, ready, language);
         marks = marks.child(status_mark(
             "hero-codec",
             mark,
@@ -254,14 +259,15 @@ pub(super) fn audio_marks(
             });
         // Auto is a configuration, not proof that upscaling is processing audio.
         let mode_label = match mode {
-            Some(DseeMode::Auto) => language.text("Auto", "自动"),
-            Some(DseeMode::Off) => language.text("Off", "关闭"),
-            None => language.text("Not read", "未读取"),
+            Some(DseeMode::Auto) => language.tr("ui.auto"),
+            Some(DseeMode::Off) => language.tr("ui.off"),
+            None => language.tr("ui.not_read"),
         };
-        let description = format!(
-            "{name} · {mode_label}{}",
-            freshness_suffix(entry.freshness, ready, language)
+        let description = language.tr_args(
+            "ui.dsee_mode_description",
+            &[("name", name), ("mode", mode_label)],
         );
+        let description = status_description(description, entry.freshness, ready, language);
         marks = marks.child(status_mark(
             ("hero-dsee", index),
             mark,

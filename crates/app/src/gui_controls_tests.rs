@@ -131,9 +131,12 @@ impl Fixture {
     }
 
     async fn refresh(&self) -> Result<(), String> {
-        tokio::time::timeout(Duration::from_secs(2), refresh_controls(&self.handle))
-            .await
-            .unwrap()
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            refresh_controls(&self.handle, crate::preferences::Language::English),
+        )
+        .await
+        .unwrap()
     }
 
     async fn close(self) {

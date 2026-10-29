@@ -4,6 +4,7 @@ use crate::{
     Desktop,
     gui_controls::{ControlAction, availability, card, control_button, note},
     gui_operation_feedback::OperationTarget,
+    preferences::Language,
 };
 use ezsc_core::{
     AudioChange, AudioState, ConnectionState, Freshness, SystemChange, SystemState,
@@ -38,13 +39,13 @@ impl Desktop {
         let editable = ready && !blocked;
         for (index, entry) in snapshot.audio.iter().enumerate() {
             let title = match entry.kind {
-                AudioKind::Dsee | AudioKind::DseeWithReasons => "DSEE",
+                AudioKind::Dsee | AudioKind::DseeWithReasons => language.tr("controls.dsee.title"),
                 AudioKind::ConnectionPriority
                 | AudioKind::ConnectionPriorityWithStatus
                 | AudioKind::ClassicLePriority
                     if !self.compact =>
                 {
-                    language.text("Connection quality", "连接质量")
+                    language.tr("controls.priority.title")
                 }
                 _ => continue,
             };
@@ -89,9 +90,9 @@ impl Desktop {
                     let enabled = editable && audio_change_ready(entry, change);
                     let session = self.session.clone();
                     section = section.child(crate::gui_style::setting_heading(
-                        "DSEE",
+                        language.tr("controls.dsee.title"),
                         Switch::new(("dsee", index))
-                            .accessibility_label(language.text("DSEE Auto", "DSEE 自动"))
+                            .accessibility_label(language.tr("controls.dsee.auto"))
                             .checked(*current == DseeMode::Auto)
                             .disabled(!enabled)
                             .on_change(move |value, _, cx| {
@@ -105,7 +106,7 @@ impl Desktop {
                                                 DseeMode::Off
                                             }),
                                         ),
-                                        "DSEE".into(),
+                                        session.preferences.language.tr("controls.dsee.title"),
                                     );
                                     cx.notify();
                                 })
@@ -118,20 +119,12 @@ impl Desktop {
                         .iter()
                         .any(|choice| choice.value == *priority)
                     {
-                        section = section.child(note(priority_label(*priority), cx));
+                        section = section.child(note(priority_label(*priority, language), cx));
                     }
                     let mut choices = div().flex().flex_wrap().gap(px(8.));
                     for (slot, choice) in priority_choices(entry).into_iter().enumerate() {
                         let change = AudioChange::Priority(choice.value);
-                        let label = if choice.value == PriorityMode::SOUND_QUALITY {
-                            language.text("Sound quality", "音质优先").to_owned()
-                        } else if choice.value == PriorityMode::CONNECTION_QUALITY {
-                            language
-                                .text("Stable connection", "稳定连接优先")
-                                .to_owned()
-                        } else {
-                            choice.label
-                        };
+                        let label = priority_label(choice.value, language);
                         choices = choices.child(control_button(
                             ("connection-quality", index * 256 + slot),
                             label,
@@ -144,24 +137,15 @@ impl Desktop {
                     }
                     section = section.child(choices).child(note(
                         if is_classic_priority(*priority) {
-                            language.text(
-                                "Your headset may ask for confirmation or reconnect.",
-                                "耳机可能要求确认或重新连接。",
-                            )
+                            language.tr("controls.priority.confirmation_notice")
                         } else {
-                            language.text(
-                                "Quality controls are available in Classic Audio mode.",
-                                "连接质量选项仅在经典音频模式下可用。",
-                            )
+                            language.tr("controls.priority.classic_required")
                         },
                         cx,
                     ));
                 }
                 _ => {
-                    section = section.child(note(
-                        language.text("Waiting for headset values…", "正在读取耳机状态…"),
-                        cx,
-                    ))
+                    section = section.child(note(language.tr("controls.state.waiting_values"), cx))
                 }
             }
             cards = cards.child(section);
@@ -201,7 +185,7 @@ impl Desktop {
             let mut section = (if parameters.is_some() {
                 crate::gui_style::surface(cx)
             } else {
-                card(language.text("Speak-to-Chat", "智能免摘对话"), cx)
+                card(language.tr("controls.speak.title"), cx)
             })
             .children(
                 availability(
@@ -218,18 +202,18 @@ impl Desktop {
                 let change = SystemChange::Enabled(!parameters.enabled());
                 let enabled = editable && system_change_ready(entry, change);
                 let session = self.session.clone();
-                let label = language.text("Speak-to-Chat", "智能免摘对话");
+                let label = language.tr("controls.speak.title");
                 section = section.child(crate::gui_style::setting_heading(
-                    label,
+                    label.clone(),
                     Switch::new(("speak-enabled", index))
-                        .accessibility_label(label)
+                        .accessibility_label(label.clone())
                         .checked(parameters.enabled())
                         .disabled(!enabled)
                         .on_change(move |value, _, cx| {
                             session.update(cx, |session, cx| {
                                 session.submit_control(
                                     ControlAction::System(kind, SystemChange::Enabled(*value)),
-                                    label.into(),
+                                    label.clone(),
                                 );
                                 cx.notify();
                             })
@@ -247,10 +231,7 @@ impl Desktop {
                     .is_some_and(|capability| capability.preview_supported);
                 if !preview_supported && preview {
                     section = section.child(note(
-                        language.text(
-                            "Stop preview before changing this setting.",
-                            "请先停止试听，再更改此设置。",
-                        ),
+                        language.tr("controls.speak.stop_preview_required"),
                         cx,
                     ));
                 }
@@ -260,9 +241,9 @@ impl Desktop {
                         control_button(
                             ("speak-preview", index),
                             if preview {
-                                language.text("Stop preview", "停止试听")
+                                language.tr("controls.speak.stop_preview")
                             } else {
-                                language.text("Preview", "试听")
+                                language.tr("controls.speak.preview")
                             },
                             editable && system_change_ready(entry, change),
                             preview,
@@ -274,10 +255,7 @@ impl Desktop {
                     );
                 }
             } else {
-                section = section.child(note(
-                    language.text("Waiting for headset values…", "正在读取耳机状态…"),
-                    cx,
-                ));
+                section = section.child(note(language.tr("controls.state.waiting_values"), cx));
             }
             if self.compact {
                 cards = cards.child(section);
@@ -287,21 +265,16 @@ impl Desktop {
                 && entry.freshness == Freshness::Current
                 && entry.status.and_then(|status| status.talking) == Some(true)
             {
-                section =
-                    section.child(note(language.text("Conversation detected", "正在对话"), cx));
+                section = section.child(note(language.tr("controls.speak.conversation"), cx));
             }
             let Some(settings) = entry
                 .extended
                 .filter(|settings| settings.kind() == kind)
                 .and_then(SpeakPresentation::from_settings)
             else {
-                cards = cards.child(section.child(note(
-                    language.text(
-                        "Detection settings have not been read yet.",
-                        "尚未读取检测设置。",
-                    ),
-                    cx,
-                )));
+                cards = cards.child(
+                    section.child(note(language.tr("controls.speak.waiting_detection"), cx)),
+                );
                 continue;
             };
             if entry.extended_freshness != entry.freshness {
@@ -317,9 +290,21 @@ impl Desktop {
             section = section.child(crate::gui_style::divider(cx));
             let mut sensitivity = div().flex().flex_wrap().items_center().gap(px(8.));
             for (slot, value, label) in [
-                (0, DetectionSensitivity::Auto, language.text("Auto", "自动")),
-                (1, DetectionSensitivity::High, language.text("High", "高")),
-                (2, DetectionSensitivity::Low, language.text("Low", "低")),
+                (
+                    0,
+                    DetectionSensitivity::Auto,
+                    language.tr("controls.sensitivity.auto"),
+                ),
+                (
+                    1,
+                    DetectionSensitivity::High,
+                    language.tr("controls.sensitivity.high"),
+                ),
+                (
+                    2,
+                    DetectionSensitivity::Low,
+                    language.tr("controls.sensitivity.low"),
+                ),
             ] {
                 let change = SystemChange::Sensitivity(value);
                 sensitivity = sensitivity.child(control_button(
@@ -333,7 +318,7 @@ impl Desktop {
                 ));
             }
             section = section.child(crate::gui_style::setting_row(
-                language.text("Sensitivity", "灵敏度"),
+                language.tr("controls.sensitivity.title"),
                 sensitivity,
                 cx,
             ));
@@ -341,18 +326,18 @@ impl Desktop {
                 let enabled =
                     editable && system_change_ready(entry, SystemChange::VoiceFocus(!voice_focus));
                 let session = self.session.clone();
-                let label = language.text("Voice focus", "语音聚焦");
+                let label = language.tr("controls.voice_focus");
                 section = section.child(crate::gui_style::setting_row(
-                    label,
+                    label.clone(),
                     Switch::new(("speak-voice", index))
-                        .accessibility_label(label)
+                        .accessibility_label(label.clone())
                         .checked(voice_focus)
                         .disabled(!enabled)
                         .on_change(move |value, _, cx| {
                             session.update(cx, |session, cx| {
                                 session.submit_control(
                                     ControlAction::System(kind, SystemChange::VoiceFocus(*value)),
-                                    label.into(),
+                                    label.clone(),
                                 );
                                 cx.notify();
                             })
@@ -362,10 +347,18 @@ impl Desktop {
             }
             let mut end = div().flex().flex_wrap().items_center().gap(px(8.));
             for (slot, value, label) in [
-                (0, ModeOutTime::Fast, language.text("Fast", "短")),
-                (1, ModeOutTime::Mid, language.text("Medium", "中")),
-                (2, ModeOutTime::Slow, language.text("Slow", "长")),
-                (3, ModeOutTime::None, language.text("Never", "不自动结束")),
+                (0, ModeOutTime::Fast, language.tr("controls.speak.end_fast")),
+                (
+                    1,
+                    ModeOutTime::Mid,
+                    language.tr("controls.speak.end_medium"),
+                ),
+                (2, ModeOutTime::Slow, language.tr("controls.speak.end_slow")),
+                (
+                    3,
+                    ModeOutTime::None,
+                    language.tr("controls.speak.end_never"),
+                ),
             ] {
                 let change = SystemChange::ModeOut(value);
                 end = end.child(control_button(
@@ -384,7 +377,7 @@ impl Desktop {
                         .flex()
                         .flex_col()
                         .gap(px(8.))
-                        .child(note(language.text("Automatic end", "自动结束"), cx))
+                        .child(note(language.tr("controls.speak.end_title"), cx))
                         .child(end),
                 ),
             );
@@ -393,12 +386,15 @@ impl Desktop {
     }
 }
 
-fn priority_label(value: PriorityMode) -> String {
+fn priority_label(value: PriorityMode, language: Language) -> String {
     match value {
-        PriorityMode::SOUND_QUALITY => "Sound quality".into(),
-        PriorityMode::CONNECTION_QUALITY => "Stable connection".into(),
-        PriorityMode::LOW_LATENCY => "LE Audio".into(),
-        _ => format!("Unsupported priority 0x{:02X}", value.as_raw()),
+        PriorityMode::SOUND_QUALITY => language.tr("controls.priority.sound"),
+        PriorityMode::CONNECTION_QUALITY => language.tr("controls.priority.stable"),
+        PriorityMode::LOW_LATENCY => language.tr("controls.priority.le_audio"),
+        _ => language.tr_args(
+            "controls.priority.unsupported",
+            &[("code", format!("{:02X}", value.as_raw()))],
+        ),
     }
 }
 
@@ -411,7 +407,6 @@ fn is_classic_priority(value: PriorityMode) -> bool {
 
 struct PriorityChoice {
     value: PriorityMode,
-    label: String,
     selectable: bool,
 }
 
@@ -429,7 +424,6 @@ fn priority_choices(entry: &AudioState) -> Vec<PriorityChoice> {
         .filter(|value| is_classic_priority(**value))
         .map(|value| PriorityChoice {
             value: *value,
-            label: priority_label(*value),
             selectable: priorities
                 .iter()
                 .filter(|candidate| *candidate == value)
@@ -595,7 +589,10 @@ mod tests {
             [0]
         );
         assert!(choices[0].selectable);
-        assert_eq!(choices[0].label, "Sound quality");
+        assert_eq!(
+            priority_label(choices[0].value, Language::English),
+            "Sound quality"
+        );
         assert!(audio_change_ready(
             &entry,
             AudioChange::Priority(PriorityMode::SOUND_QUALITY)

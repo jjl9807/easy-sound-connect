@@ -33,7 +33,7 @@ pub(super) enum Event {
     Connected(u64, DeviceHandle),
     Snapshot(u64, Box<DeviceSnapshot>),
     Finished(u64, Result<Completion, String>),
-    Operation(u64, String, Result<OperationResult, String>),
+    Operation(u64, String, Language, Result<OperationResult, String>),
     DisplayLanguage(u64, Language, Result<OperationResult, String>),
     PromptResponse(u64, PromptId, Result<OperationResult, String>),
 }
@@ -110,19 +110,20 @@ impl Session {
         .detach();
         let sender = events.clone();
         let cancel = lifetime.clone();
+        let language = preferences.language;
         let saved_writer = (!preview).then(|| SavedWriter::new(&runtime, events.clone()));
         if !preview {
             runtime.spawn(async move {
             let (saved, warning) = tokio::task::spawn_blocking(SavedDevices::load)
                 .await
-                .unwrap_or_else(|error| (SavedDevices::default(), Some(format!("Unable to load saved devices: {error}"))));
+                .unwrap_or_else(|error| (SavedDevices::default(), Some(error.to_string())));
             if sender.send(Event::SavedLoaded(saved, warning)).await.is_err() || cancel.is_cancelled() {
                 return;
             }
             let result = tokio::select! {
                 _ = cancel.cancelled() => return,
                 result = tokio::time::timeout(Duration::from_secs(15), bluetooth::system_backend()) => {
-                    result.map_err(|_| "Bluetooth startup timed out".to_owned())
+                    result.map_err(|_| language.tr("session.bluetooth_startup_timeout"))
                         .and_then(|result| result.map_err(|error| error.to_string()))
                         .map(|backend| Arc::new(DeviceManager::new(backend)))
                 }
@@ -151,10 +152,7 @@ impl Session {
             discovering: false,
             busy: false,
             operation_feedback: Default::default(),
-            message: preferences
-                .language
-                .text("Starting Bluetooth…", "正在启动蓝牙…")
-                .into(),
+            message: preferences.language.tr("session.starting_bluetooth"),
             diagnostics: std::env::args().any(|arg| arg == "--diagnostics"),
             replying_to: None,
             preferences,
@@ -200,26 +198,24 @@ impl Session {
                 self.saved_loaded = true;
                 self.device_storage_error = warning;
                 if let Some(error) = &self.device_storage_error {
-                    self.show_notice(Severity::Warning, error.clone());
+                    self.show_notice(
+                        Severity::Warning,
+                        language.tr_args("session.saved_load_failed", &[("error", error.clone())]),
+                    );
                 }
             }
             Event::SavedWritten => {}
             Event::Backend(Ok(manager)) => {
                 self.manager = Some(manager);
-                self.message = language
-                    .text(
-                        "Choose a saved headset or add a device.",
-                        "请选择已保存的耳机，或添加设备。",
-                    )
-                    .into();
+                self.message = language.tr("session.choose_device");
                 if self.adding_device {
                     self.discover();
                 }
             }
             Event::Backend(Err(error)) => {
-                self.message = format!(
-                    "{}: {error}",
-                    language.text("Bluetooth startup failed", "蓝牙启动失败")
+                self.message = language.tr_args(
+                    "session.bluetooth_startup_failed",
+                    &[("error", error.to_string())],
                 );
                 self.show_notice(Severity::Error, self.message.clone());
             }
@@ -232,11 +228,9 @@ impl Session {
                     Ok(devices) => {
                         if self.selected.is_none() && !self.busy {
                             self.message = if devices.is_empty() {
-                                language.text("No paired MDR v2 devices found. Pair your headset in system settings, then refresh.", "未发现已配对的 MDR v2 耳机。请先在系统设置中配对，然后刷新。").into()
+                                language.tr("session.no_paired_devices")
                             } else {
-                                language
-                                    .text("Select a headset to connect.", "请选择要连接的耳机。")
-                                    .into()
+                                language.tr("session.select_device")
                             };
                         }
                         self.devices = devices
@@ -245,9 +239,9 @@ impl Session {
                             .collect();
                     }
                     Err(error) => {
-                        self.message = format!(
-                            "{}: {error}",
-                            language.text("Device discovery failed", "设备发现失败")
+                        self.message = language.tr_args(
+                            "session.device_discovery_failed",
+                            &[("error", error.to_string())],
                         );
                         self.show_notice(Severity::Error, self.message.clone());
                     }
@@ -256,18 +250,12 @@ impl Session {
             Event::CleanupWarning(epoch, error) if epoch == self.epoch => {
                 self.show_notice(
                     Severity::Warning,
-                    format!(
-                        "{}: {error}",
-                        language.text(
-                            "Control cleanup completed with an error",
-                            "控制连接清理已完成，但报告了错误"
-                        )
-                    ),
+                    language.tr_args("session.cleanup_error", &[("error", error.to_string())]),
                 );
             }
             Event::PreviousReleased(epoch) if epoch == self.epoch => {
                 self.cleanup_device = None;
-                self.message = language.text("Connecting…", "正在连接…").into();
+                self.message = language.tr("session.connecting");
             }
             Event::Initialized(epoch, device) if epoch == self.epoch => {
                 self.saved_devices.upsert(device);
@@ -288,21 +276,21 @@ impl Session {
                 if let Some(snapshot) = &self.snapshot {
                     let phase = match snapshot.connection {
                         ezsc_core::ConnectionState::Connected => {
-                            Some(language.text("Control channel connected…", "控制通道已连接…"))
+                            Some(language.tr("session.control_channel_connected"))
                         }
-                        ezsc_core::ConnectionState::Negotiating => Some(
-                            language.text("Reading headset capabilities…", "正在读取耳机能力…"),
-                        ),
+                        ezsc_core::ConnectionState::Negotiating => {
+                            Some(language.tr("session.reading_headset_capabilities"))
+                        }
                         ezsc_core::ConnectionState::Synchronizing => {
-                            Some(language.text("Synchronizing headset state…", "正在同步耳机状态…"))
+                            Some(language.tr("session.synchronizing_headset_state"))
                         }
                         ezsc_core::ConnectionState::Closing => {
-                            Some(language.text("Closing control connection…", "正在关闭控制连接…"))
+                            Some(language.tr("session.closing_control_connection"))
                         }
                         _ => None,
                     };
                     if let Some(phase) = phase {
-                        self.message = phase.into();
+                        self.message = phase;
                     }
                 }
             }
@@ -314,28 +302,19 @@ impl Session {
                 self.operation_feedback.finish();
                 let successful = result.is_ok();
                 self.message = match result {
-                    Ok(Completion::StateUpdated) => language
-                        .text("Device state is up to date.", "耳机状态已更新。")
-                        .into(),
+                    Ok(Completion::StateUpdated) => language.tr("session.state_updated"),
                     Ok(Completion::Released) => {
                         self.cleanup_device = None;
-                        language
-                            .text("Control released.", "已释放控制连接。")
-                            .into()
+                        language.tr("session.control_released")
                     }
                     Ok(Completion::Forgotten(device)) => {
                         self.cleanup_device = None;
                         self.remove_saved_device(&device);
-                        language
-                            .text(
-                                "Device removed from the saved list.",
-                                "已从已保存列表移除设备。",
-                            )
-                            .into()
+                        language.tr("session.device_removed")
                     }
-                    Err(error) => format!(
-                        "{}: {error}",
-                        language.text("Unable to complete", "无法完成操作")
+                    Err(error) => language.tr_args(
+                        "session.unable_to_complete",
+                        &[("error", error.to_string())],
                     ),
                 };
                 if successful {
@@ -346,7 +325,7 @@ impl Session {
                 }
                 self.start_display_language_refresh();
             }
-            Event::Operation(epoch, label, result) if epoch == self.epoch => {
+            Event::Operation(epoch, label, operation_language, result) if epoch == self.epoch => {
                 if let Some(handle) = &self.handle {
                     self.snapshot = Some(handle.snapshot());
                 }
@@ -361,7 +340,7 @@ impl Session {
                     )
                 });
                 let severity = operation_severity(&result);
-                self.message = operation_message(&label, result, language);
+                self.message = operation_message(&label, result, operation_language);
                 if let Some(severity) = severity {
                     self.show_notice(severity, self.message.clone());
                 }
@@ -381,7 +360,7 @@ impl Session {
                 }
                 let severity = operation_severity(&result);
                 let message = operation_message(
-                    language.text("Device display labels", "耳机显示标签"),
+                    &language.tr("session.device_display_labels"),
                     result,
                     language,
                 );
@@ -416,7 +395,7 @@ impl Session {
                     }
                     let severity = operation_severity(&result);
                     self.message = operation_message(
-                        language.text("Device decision", "设备确认"),
+                        &language.tr("session.device_decision"),
                         result,
                         language,
                     );
@@ -445,17 +424,11 @@ impl Session {
             self.replying_to = None;
             self.prompt_error = None;
             self.message = match &snapshot.last_error {
-                Some(error) => format!(
-                    "{}: {error}. {}",
-                    language.text("Control connection ended", "控制连接已结束"),
-                    language.text("Select the headset to reconnect.", "请选择耳机重新连接。")
+                Some(error) => language.tr_args(
+                    "session.disconnected_error",
+                    &[("error", error.to_string())],
                 ),
-                None => language
-                    .text(
-                        "Control connection ended. Select the headset to reconnect.",
-                        "控制连接已结束。请选择耳机重新连接。",
-                    )
-                    .into(),
+                None => language.tr("session.disconnected"),
             };
             let previously_ended = previous_connection.as_ref().is_some_and(|(device, state)| {
                 device == &snapshot.device
@@ -601,14 +574,7 @@ impl Session {
         let cancel = self.lifetime.child_token();
         self.discovery_cancel = Some(cancel.clone());
         self.discovering = true;
-        self.message = self
-            .preferences
-            .language
-            .text(
-                "Looking for paired MDR v2 devices…",
-                "正在查找已配对的 MDR v2 耳机…",
-            )
-            .into();
+        self.message = self.preferences.language.tr("session.discovering");
         let sender = self.events.clone();
         self.runtime.spawn(async move {
             let result = tokio::select! {
@@ -750,11 +716,7 @@ impl Session {
         self.replying_to = None;
         self.prompt_error = None;
         self.busy = true;
-        self.message = self
-            .preferences
-            .language
-            .text("Connecting…", "正在连接…")
-            .into();
+        self.message = self.preferences.language.tr("session.connecting");
         if self.saved_devices.find(&device).is_some() {
             self.saved_devices.last_selected = Some(device.0.clone());
             self.persist_saved_devices();
@@ -762,7 +724,8 @@ impl Session {
         self.finish_add_device();
         let sender = self.events.clone();
         let cancel = self.lifetime.clone();
-        let display_language = display_language(self.preferences.language);
+        let language = self.preferences.language;
+        let display_language = display_language(language);
         self.runtime.spawn(async move {
             let result = async {
                 if let Some(previous) = previous {
@@ -801,7 +764,7 @@ impl Session {
                     transport: transport.into(),
                 };
                 sender.send(Event::Initialized(epoch, saved)).await.map_err(|_| "Application closed".to_owned())?;
-                gui_controls::refresh_controls(&handle).await
+                gui_controls::refresh_controls(&handle, language).await
             }.await;
             let _ = sender.send(Event::Finished(epoch, result.map(|_| Completion::StateUpdated))).await;
         });
@@ -874,11 +837,7 @@ impl Session {
             handle.cancel();
         }
         self.snapshot = None;
-        self.message = self
-            .preferences
-            .language
-            .text("Releasing control…", "正在释放控制连接…")
-            .into();
+        self.message = self.preferences.language.tr("session.releasing_control");
         let sender = self.events.clone();
         self.runtime.spawn(async move {
             let result = async {
@@ -915,7 +874,12 @@ impl Session {
             self.saved_result_revision = revision;
             self.device_storage_error = error;
             if let Some(error) = &self.device_storage_error {
-                self.show_notice(Severity::Error, error.clone());
+                self.show_notice(
+                    Severity::Error,
+                    self.preferences
+                        .language
+                        .tr_args("session.saved_write_failed", &[("error", error.clone())]),
+                );
             }
         }
     }
@@ -951,23 +915,17 @@ impl Session {
         };
         self.busy = true;
         self.start_operation_feedback(OperationTarget::Refresh);
-        self.message = self
-            .preferences
-            .language
-            .text(
-                "Reading battery, audio codec and sound controls…",
-                "正在读取电量、音频编码和声音设置…",
-            )
-            .into();
+        self.message = self.preferences.language.tr("session.refreshing");
         let sender = self.events.clone();
         let epoch = self.epoch;
+        let language = self.preferences.language;
         self.runtime.spawn(async move {
             let result = async {
                 handle
                     .refresh_battery()
                     .await
                     .map_err(|error| error.to_string())?;
-                gui_controls::refresh_controls(&handle).await?;
+                gui_controls::refresh_controls(&handle, language).await?;
                 if handle.snapshot().audio_codec.is_some() {
                     handle
                         .refresh_audio_codec()
@@ -1055,7 +1013,7 @@ impl SavedWriter {
                     saved.save().map_err(|error| error.to_string())
                 })
                 .await
-                .map_err(|error| format!("Unable to save devices: {error}"))
+                .map_err(|error| error.to_string())
                 .and_then(|result| result)
                 .err();
                 completed.send_replace((revision, error));
@@ -1098,13 +1056,23 @@ pub(super) fn operation_message(
     language: Language,
 ) -> String {
     match result {
-        Ok(OperationResult::Confirmed) => format!("{}: {label}. {}", language.text("Confirmed", "已确认"), language.text("The headset confirmed the requested value.", "耳机已确认请求的设置。")),
-        Ok(OperationResult::Adjusted) => format!("{}: {label}. {}", language.text("Adjusted", "设备已调整"), language.text("The headset reported a different value; controls show its actual state.", "耳机返回了不同的值；界面已显示实际状态。")),
-        Ok(OperationResult::Synchronized) => format!("{}: {label}.", language.text("Updated", "已更新")),
-        Ok(OperationResult::AwaitingConfirmation) => language.text("A headset message interrupted this change. Review it, then check the reported settings before trying again.", "耳机提示中断了此次更改。请先处理提示并检查实际设置，再决定是否重试。").into(),
-        Ok(OperationResult::Cancelled) => language.text("Cancelled. Your decision was sent to the headset.", "已取消，并已将决定发送给耳机。").into(),
-        Ok(OperationResult::Dismissed) => language.text("Device message closed locally.", "已在本地关闭设备提示。").into(),
-        Err(error) => format!("{} {label}: {error}", language.text("Could not confirm", "无法确认")),
+        Ok(OperationResult::Confirmed) => language.tr_args(
+            "session.operation_confirmed",
+            &[("label", label.to_owned())],
+        ),
+        Ok(OperationResult::Adjusted) => {
+            language.tr_args("session.operation_adjusted", &[("label", label.to_owned())])
+        }
+        Ok(OperationResult::Synchronized) => {
+            language.tr_args("session.operation_updated", &[("label", label.to_owned())])
+        }
+        Ok(OperationResult::AwaitingConfirmation) => language.tr("session.operation_interrupted"),
+        Ok(OperationResult::Cancelled) => language.tr("session.operation_cancelled"),
+        Ok(OperationResult::Dismissed) => language.tr("session.prompt_dismissed"),
+        Err(error) => language.tr_args(
+            "session.operation_failed",
+            &[("label", label.to_owned()), ("error", error)],
+        ),
     }
 }
 
@@ -1229,12 +1197,18 @@ mod tests {
             OperationResult::Cancelled,
             OperationResult::Dismissed,
         ] {
-            state.receive(Event::Operation(0, "Sound".into(), Ok(result)));
+            state.receive(Event::Operation(
+                0,
+                "Sound".into(),
+                Language::English,
+                Ok(result),
+            ));
             assert!(state.notices.current().is_none());
         }
         state.receive(Event::Operation(
             0,
             "Sound".into(),
+            Language::English,
             Ok(OperationResult::Adjusted),
         ));
         let notice = state.notices.current().unwrap();
@@ -1244,6 +1218,7 @@ mod tests {
         state.receive(Event::Operation(
             0,
             "Sound".into(),
+            Language::English,
             Err("Readback failed".into()),
         ));
         let error = state.notices.current().unwrap();
@@ -1269,7 +1244,12 @@ mod tests {
         state.discovery_generation = 3;
         for event in [
             Event::Finished(1, Err("Old failure".into())),
-            Event::Operation(1, "Sound".into(), Err("Old failure".into())),
+            Event::Operation(
+                1,
+                "Sound".into(),
+                Language::English,
+                Err("Old failure".into()),
+            ),
             Event::CleanupWarning(1, "Old warning".into()),
             Event::Devices(3, Err("Closed discovery".into())),
         ] {
@@ -1485,7 +1465,13 @@ mod tests {
         state.receive(Event::SavedWritten);
         let notice = state.notices.current().unwrap();
         assert_eq!(notice.severity, Severity::Error);
-        assert_eq!(notice.message, "Cannot save devices");
+        assert_eq!(
+            notice.message,
+            state.preferences.language.tr_args(
+                "session.saved_write_failed",
+                &[("error", "Cannot save devices".into())]
+            )
+        );
         let id = notice.id;
         state.receive(Event::NoticeExpired(id));
         state.receive(Event::SavedWritten);

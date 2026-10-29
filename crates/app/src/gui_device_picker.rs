@@ -22,17 +22,16 @@ impl Desktop {
         let language = state.preferences.language;
         let name = state.focused_name().unwrap_or_else(|| {
             if state.focused_device.is_some() {
-                language.text("Your SONY headphones", "你的 SONY 耳机")
+                language.tr("ui.your_sony_headphones")
             } else if !state.saved_devices.entries.is_empty() {
-                language.text("Choose headphones", "选择耳机")
+                language.tr("ui.choose_headphones")
             } else {
-                language.text("Add headphones", "添加耳机")
+                language.tr("ui.add_headphones")
             }
-            .to_owned()
         });
         let (status, color, battery) = card_status(state, state.focused_device.as_ref(), cx);
         let trigger = Button::new("device-picker-trigger")
-            .accessibility_label(language.text("Choose headphones", "选择耳机"))
+            .accessibility_label(language.tr("ui.choose_headphones"))
             .ghost()
             .w_full()
             .h(px(64.))
@@ -47,6 +46,7 @@ impl Desktop {
                 color,
                 battery,
                 gui_product_images::model_key(state, state.focused_device.as_ref()),
+                language,
                 cx,
             ));
         let view = cx.entity().downgrade();
@@ -80,10 +80,11 @@ impl Desktop {
 
 fn card(
     name: String,
-    status: &'static str,
+    status: String,
     color: Hsla,
     battery: Option<String>,
     model: Option<ModelKey>,
+    language: crate::preferences::Language,
     cx: &App,
 ) -> Div {
     div()
@@ -128,18 +129,19 @@ fn card(
                                 .truncate()
                                 .child(battery.map_or_else(
                                     || status.to_owned(),
-                                    |battery| format!("{status} · {battery}"),
+                                    |battery| {
+                                        language.tr_args(
+                                            "ui.connection_battery",
+                                            &[("status", status.clone()), ("battery", battery)],
+                                        )
+                                    },
                                 )),
                         ),
                 ),
         )
 }
 
-fn card_status(
-    state: &Session,
-    id: Option<&DeviceId>,
-    cx: &App,
-) -> (&'static str, Hsla, Option<String>) {
+fn card_status(state: &Session, id: Option<&DeviceId>, cx: &App) -> (String, Hsla, Option<String>) {
     let language = state.preferences.language;
     let snapshot = state
         .snapshot
@@ -149,20 +151,16 @@ fn card_status(
         state.device_connection(id)
     });
     let (status, color) = match connection {
-        ConnectionState::Ready => (language.text("Connected", "已连接"), cx.theme().success),
+        ConnectionState::Ready => (language.tr("ui.connected"), cx.theme().success),
         ConnectionState::Connected | ConnectionState::Negotiating => {
-            (language.text("Connecting", "连接中"), cx.theme().warning)
+            (language.tr("ui.connecting"), cx.theme().warning)
         }
-        ConnectionState::Synchronizing => (language.text("Syncing", "同步中"), cx.theme().warning),
-        ConnectionState::Closing => (language.text("Disconnecting", "断开中"), cx.theme().warning),
-        ConnectionState::Failed => (
-            language.text("Connection failed", "连接失败"),
-            cx.theme().danger,
-        ),
-        ConnectionState::Disconnected => (
-            language.text("Not connected", "未连接"),
-            cx.theme().muted_foreground,
-        ),
+        ConnectionState::Synchronizing => (language.tr("ui.syncing"), cx.theme().warning),
+        ConnectionState::Closing => (language.tr("ui.disconnecting"), cx.theme().warning),
+        ConnectionState::Failed => (language.tr("ui.connection_failed"), cx.theme().danger),
+        ConnectionState::Disconnected => {
+            (language.tr("ui.not_connected"), cx.theme().muted_foreground)
+        }
     };
     let battery = (connection == ConnectionState::Ready).then(|| {
         snapshot
@@ -185,18 +183,7 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                 .py_1()
                 .text_size(px(12.))
                 .font_weight(FontWeight::BOLD)
-                .child(language.text(
-                    if adding {
-                        "Add headphones"
-                    } else {
-                        "Your headphones"
-                    },
-                    if adding {
-                        "添加耳机"
-                    } else {
-                        "我的耳机"
-                    },
-                )),
+                .child(language.tr("ui.add_headphones")),
         )
     });
     let mut list = div()
@@ -207,13 +194,7 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
         .max_h(px(350.))
         .overflow_y_scroll();
     if adding {
-        list = list.child(hint(
-            language.text(
-                "Pair in system Bluetooth settings, then select your headphones here.",
-                "先在系统蓝牙设置中配对，然后在这里选择耳机。",
-            ),
-            cx,
-        ));
+        list = list.child(hint(language.tr("ui.pair_before_selecting"), cx));
         let candidates: Vec<_> = state
             .devices
             .iter()
@@ -223,12 +204,9 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
         if candidates.is_empty() {
             list = list.child(hint(
                 if state.discovering {
-                    language.text("Looking for paired headphones…", "正在查找已配对耳机…")
+                    language.tr("ui.looking_for_paired_headphones")
                 } else {
-                    language.text(
-                        "No new paired MDR v2 headphones found.",
-                        "未找到可添加的 MDR v2 耳机。",
-                    )
+                    language.tr("ui.no_new_headphones")
                 },
                 cx,
             ));
@@ -245,7 +223,7 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
             let id = device.id.clone();
             let name = device
                 .name
-                .unwrap_or_else(|| language.text("Unnamed headphones", "未命名耳机").into());
+                .unwrap_or_else(|| language.tr("ui.unnamed_headphones"));
             let connect_session = session.clone();
             let connect_view = view.clone();
             list = list.child(
@@ -255,13 +233,16 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                     .p_0()
                     .w_full()
                     .disabled(blocked || state.discovering)
-                    .accessibility_label(format!("{} {name}", language.text("Connect", "连接")))
+                    .accessibility_label(
+                        language.tr_args("ui.connect_named_headphones", &[("name", name.clone())]),
+                    )
                     .child(card(
                         name,
-                        language.text("Not connected", "未连接"),
+                        language.tr("ui.not_connected"),
                         cx.theme().muted_foreground,
                         None,
                         None,
+                        language,
                         cx,
                     ))
                     .on_click(move |_, _, cx| {
@@ -285,13 +266,16 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                 let id = device.id.clone();
                 let session = session.clone();
                 let view = view.clone();
-                let label = format!(
-                    "{} {}",
-                    language.text("Connect via", "通过以下方式连接："),
-                    match alternate {
-                        TransportKind::Rfcomm => "RFCOMM",
-                        TransportKind::Gatt => "GATT",
-                    }
+                let label = language.tr_args(
+                    "ui.connect_via_transport",
+                    &[(
+                        "transport",
+                        match alternate {
+                            TransportKind::Rfcomm => "RFCOMM",
+                            TransportKind::Gatt => "GATT",
+                        }
+                        .into(),
+                    )],
                 );
                 list = list.child(
                     Button::new(("add-headset-transport", index * 2 + option))
@@ -315,10 +299,7 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
         }
     } else {
         if state.saved_devices.entries.is_empty() {
-            list = list.child(hint(
-                language.text("No saved headphones yet.", "还没有保存的耳机。"),
-                cx,
-            ));
+            list = list.child(hint(language.tr("ui.no_saved_headphones_yet"), cx));
         }
         for (index, device) in state.saved_devices.entries.iter().enumerate() {
             let id = device.device_id();
@@ -346,13 +327,16 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                     .w_full()
                     .min_w_0()
                     .disabled(blocked)
-                    .accessibility_label(format!("{} {name}", language.text("Select", "选择")))
+                    .accessibility_label(
+                        language.tr_args("ui.select_named_headphones", &[("name", name.clone())]),
+                    )
                     .child(card(
                         name,
                         status,
                         color,
                         battery,
                         gui_product_images::model_key(state, Some(&id)),
+                        language,
                         cx,
                     ))
                     .on_click(move |_, _, cx| {
@@ -389,7 +373,7 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                         .flex_1()
                         .min_w_0()
                         .h(px(32.))
-                        .label(language.text("Back", "返回"))
+                        .label(language.tr("ui.back"))
                         .on_click(move |_, _, cx| {
                             back_session.update(cx, |state, cx| {
                                 state.finish_add_device();
@@ -406,9 +390,9 @@ fn picker_content(session: &Entity<Session>, view: WeakEntity<Desktop>, cx: &mut
                     .h(px(32.))
                     .when(!adding, |button| button.icon(IconName::Plus))
                     .label(if adding {
-                        language.text("Refresh", "刷新")
+                        language.tr("ui.refresh")
                     } else {
-                        language.text("Add headphones", "添加耳机")
+                        language.tr("ui.add_headphones")
                     })
                     .disabled(blocked || state.discovering)
                     .on_click(move |_, _, cx| {
